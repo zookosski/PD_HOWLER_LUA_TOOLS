@@ -1,0 +1,284 @@
+-- =========================================================
+-- AETHER FIELDS v2: Generative Flow + Shell Integration
+-- Fixed: Removed hallucinated API calls
+-- Added: Optional Bloom Post-Processing
+-- =========================================================
+
+local totalFrames = Dog_GetTotalFrames()
+
+if totalFrames <= 0 then
+    Dog_MessageBox("Please create an animation first!")
+    return
+end
+
+Dog_SaveUndo()
+
+-- =========================================================
+-- GUI SETUP
+-- =========================================================
+GUI_SetCaption("Aether Fields Generator")
+
+GUI_AddControl("TextLabel", "Field Physics")
+local h_scale     = GUI_AddControl("Scroller", "Noise Scale", 15, 5, 50)
+local h_speed     = GUI_AddControl("Scroller", "Evolution Speed", 10, 0, 50)
+local h_friction  = GUI_AddControl("Scroller", "Flow Friction", 85, 0, 100)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Particle Settings")
+local h_density   = GUI_AddControl("Scroller", "Particle Density", 60, 10, 200)
+local h_trail     = GUI_AddControl("Scroller", "Flow Length", 10, 1, 30)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Visual Style")
+local h_palette   = GUI_AddControl("Combobox", "Color Theme")
+-- Define Palettes
+GUI_SetList(h_palette, 0, "Midnight Aurora")
+GUI_SetList(h_palette, 1, "Solar Flare")
+GUI_SetList(h_palette, 2, "Deep Ocean")
+GUI_SetList(h_palette, 3, "Neon Cyberpunk")
+GUI_SetList(h_palette, 4, "Monochrome Ink")
+GUI_SetSettings(h_palette, 0, "Midnight Aurora")
+
+-- Post Processing Integration (Using your Shell Cheat Sheet)
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Post-Processing (Shell Integration)")
+local h_bloom     = GUI_AddControl("Checkbox", "Apply Bloom Filter (Bloom_Advanced_pf.exe)")
+GUI_SetSettings(h_bloom, 0) -- Default off
+
+GUI_AddControl("Line")
+local h_preview = GUI_AddControl("Button", "Preview Current Frame")
+local h_animate = GUI_AddControl("Button", "Render Animation")
+
+GUI_OpenPanel()
+
+-- =========================================================
+-- CONFIG VARIABLES
+-- =========================================================
+-- Using global width/height as per your working environment
+local simWidth = width 
+local simHeight = height
+
+local particles = {}
+local densityMap = {} 
+
+-- Default params
+local p_scale = 0.005
+local p_speed = 0.01
+local p_friction = 0.85
+local p_countMult = 60
+local p_trailLen = 10
+local p_palIdx = 0
+local p_useBloom = 0
+
+local palettes = {
+    {{0.0, 0.0, 0.1}, {0.0, 0.4, 0.4}, {0.2, 0.8, 0.6}, {0.8, 1.0, 0.8}}, -- Aurora
+    {{0.1, 0.0, 0.0}, {0.5, 0.1, 0.0}, {1.0, 0.6, 0.1}, {1.0, 1.0, 0.8}}, -- Solar
+    {{0.0, 0.0, 0.1}, {0.0, 0.2, 0.4}, {0.0, 0.5, 0.7}, {0.6, 0.9, 1.0}}, -- Ocean
+    {{0.1, 0.0, 0.2}, {0.6, 0.0, 0.6}, {0.0, 0.8, 0.8}, {1.0, 0.0, 0.5}}, -- Neon
+    {{0.0, 0.0, 0.0}, {0.3, 0.3, 0.3}, {0.7, 0.7, 0.7}, {1.0, 1.0, 1.0}}  -- Ink
+}
+
+-- =========================================================
+-- MATH & LOGIC
+-- =========================================================
+
+-- Simple 3D pseudo-noise
+local function noise3D(x, y, z)
+    -- Combining sines/cosines at different frequencies
+    return math.sin(x) * math.cos(y) + math.sin(y*0.5 + z) * math.cos(x*0.5 + z)
+end
+
+local function getColor(t, pal)
+    t = math.max(0, math.min(1, t))
+    local n = #pal
+    local segment = t * (n - 1)
+    local i1 = math.max(1, math.min(n, math.floor(segment) + 1))
+    local i2 = math.max(1, math.min(n, i1 + 1))
+    local blend = segment - math.floor(segment)
+    return 
+        pal[i1][1] * (1 - blend) + pal[i2][1] * blend,
+        pal[i1][2] * (1 - blend) + pal[i2][2] * blend,
+        pal[i1][3] * (1 - blend) + pal[i2][3] * blend
+end
+
+local function initSimulation()
+    particles = {}
+    math.randomseed(os.time())
+    
+    -- Reset Density Map
+    for y = 0, simHeight do
+        densityMap[y] = {}
+        for x = 0, simWidth do
+            densityMap[y][x] = 0
+        end
+    end
+
+    -- Spawn Particles
+    local totalP = p_countMult * 40 
+    for i = 1, totalP do
+        particles[i] = {
+            x = math.random() * simWidth,
+            y = math.random() * simHeight,
+            vx = 0, vy = 0
+        }
+    end
+end
+
+local function simulateStep(time_z)
+    for i = 1, #particles do
+        local p = particles[i]
+        
+        -- Get flow angle
+        local angle = noise3D(p.x * p_scale, p.y * p_scale, time_z) * math.pi * 2
+        
+        -- Physics
+        local fx = math.cos(angle)
+        local fy = math.sin(angle)
+        
+        p.vx = (p.vx * p_friction) + (fx * (1-p_friction))
+        p.vy = (p.vy * p_friction) + (fy * (1-p_friction))
+        
+        -- Normalize speed (keep flow constant)
+        local speed = math.sqrt(p.vx*p.vx + p.vy*p.vy)
+        if speed > 0.001 then
+            p.vx = (p.vx / speed) * 2
+            p.vy = (p.vy / speed) * 2
+        end
+        
+        p.x = p.x + p.vx
+        p.y = p.y + p.vy
+        
+        -- Wrap
+        if p.x < 0 then p.x = simWidth - 1 elseif p.x >= simWidth then p.x = 0 end
+        if p.y < 0 then p.y = simHeight - 1 elseif p.y >= simHeight then p.y = 0 end
+        
+        -- Accumulate Density
+        local ix = math.floor(p.x)
+        local iy = math.floor(p.y)
+        if densityMap[iy] and densityMap[iy][ix] then
+            densityMap[iy][ix] = densityMap[iy][ix] + 0.15 -- Add brightness
+        end
+    end
+end
+
+local function renderToScreen()
+    local pal = palettes[p_palIdx + 1]
+    
+    for y = 0, simHeight - 1 do
+        for x = 0, simWidth - 1 do
+            local d = densityMap[y][x]
+            if d > 0 then
+                -- Logarithmic scaling for nice glow
+                local intensity = math.log(1 + d) * 0.4
+                local r, g, b = getColor(intensity, pal)
+                
+                -- Additive blending with existing pixel (optional, here we set directly)
+                -- set_rgb(x, y, math.min(1, r), math.min(1, g), math.min(1, b))
+                
+                -- Direct set for cleaner look on black
+                if intensity > 0.05 then
+                     set_rgb(x, y, math.min(1, r), math.min(1, g), math.min(1, b))
+                end
+                
+                -- Decay density for next pass
+                densityMap[y][x] = densityMap[y][x] * 0.8
+            end
+        end
+    end
+end
+
+-- Function to apply bloom via Shell if requested
+local function applyPostProcess()
+    if p_useBloom == 1 then
+        -- Using the pattern from your cheat sheet
+        Dog_ShellExe('"Bloom_Advanced_pf.exe"')
+        Dog_GetBuffer() -- Critical Sync
+    end
+end
+
+-- =========================================================
+-- MAIN EVENT LOOP
+-- =========================================================
+
+local function getGuiValues()
+    p_scale = GUI_GetSettings(h_scale) / 1000.0
+    p_speed = GUI_GetSettings(h_speed) / 500.0
+    p_friction = GUI_GetSettings(h_friction) / 100.0
+    p_countMult = GUI_GetSettings(h_density)
+    p_trailLen = GUI_GetSettings(h_trail)
+    p_palIdx = GUI_GetSettings(h_palette)
+    p_useBloom = GUI_GetSettings(h_bloom)
+end
+
+repeat
+    idx, retval, retstr = GUI_WaitOnEvent()
+    
+    if idx == h_preview then
+        getGuiValues()
+        initSimulation()
+        
+        -- Clear screen black
+        Dog_SetRGB(0,0,0)
+        Dog_Clear()
+        
+        -- Run simulation steps
+        for i = 1, (p_trailLen * 2) do
+            simulateStep(0)
+        end
+        
+        renderToScreen()
+        Dog_Refresh()
+        
+        -- Apply Bloom if checked
+        applyPostProcess()
+        Dog_Refresh()
+        
+    elseif idx == h_animate then
+        getGuiValues()
+        initSimulation()
+        
+        local z_time = 0
+        
+        for f = 0, totalFrames - 1 do
+            Dog_GotoFrame(f)
+            
+            -- Clear to black
+            for cy = 0, simHeight-1 do
+                for cx = 0, simWidth-1 do
+                    set_rgb(cx, cy, 0, 0, 0)
+                end
+            end
+            
+            -- Simulate flow
+            for s = 1, p_trailLen do
+                 simulateStep(z_time)
+            end
+            
+            renderToScreen()
+            
+            -- Move noise field through time
+            z_time = z_time + p_speed
+            
+            -- Apply Post FX
+            applyPostProcess()
+            
+            Dog_Refresh()
+            
+            if f % 5 == 0 then
+                progress(f / totalFrames)
+            end
+        end
+        
+        progress(0)
+        Dog_MessageBox("Rendering Complete!")
+        break
+    end
+    
+until idx < 0
+
+GUI_ClosePanel()
+
+if idx == -2 then
+    Dog_RestoreUndo()
+    Dog_Refresh()
+end
