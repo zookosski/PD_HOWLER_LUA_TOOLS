@@ -1,0 +1,263 @@
+-- =========================================================
+-- QUANTUM ATTRACTORS: Strange Attractor Generator
+-- Visuals: Holographic Silk / Chaos Theory Maps
+-- Includes: Auto-Bloom Shell Integration
+-- =========================================================
+
+local totalFrames = Dog_GetTotalFrames()
+
+if totalFrames <= 0 then
+    Dog_MessageBox("Please create an animation first!\n(File > New > Animation)")
+    return
+end
+
+Dog_SaveUndo()
+
+-- =========================================================
+-- GUI SETUP
+-- =========================================================
+GUI_SetCaption("Quantum Attractor Generator")
+
+GUI_AddControl("TextLabel", "Chaos Equation Params")
+local h_chaos     = GUI_AddControl("Scroller", "Chaos Level", 20, 1, 100) -- Modifies the variable range
+local h_morph     = GUI_AddControl("Scroller", "Morph Speed", 5, 0, 50)   -- How fast shape changes
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Rendering Quality")
+local h_density   = GUI_AddControl("Scroller", "Density (Points)", 50, 10, 200) -- x1000 points
+local h_exposure  = GUI_AddControl("Scroller", "Exposure/Bright", 30, 1, 100)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Color Palette")
+local h_palette   = GUI_AddControl("Combobox", "Theme")
+GUI_SetList(h_palette, 0, "Cyber Purple")
+GUI_SetList(h_palette, 1, "Radioactive Gold")
+GUI_SetList(h_palette, 2, "Ghostly White")
+GUI_SetList(h_palette, 3, "Matrix Code")
+GUI_SetList(h_palette, 4, "Blood Moon")
+GUI_SetSettings(h_palette, 0, "Cyber Purple")
+
+GUI_AddControl("Line")
+local h_bloom     = GUI_AddControl("Checkbox", "Apply Bloom (Post-Process)")
+GUI_SetSettings(h_bloom, 1) -- On by default because it looks awesome
+
+GUI_AddControl("Line")
+local h_preview = GUI_AddControl("Button", "Preview Frame")
+local h_animate = GUI_AddControl("Button", "Render Sequence")
+
+GUI_OpenPanel()
+
+-- =========================================================
+-- CONFIG & VARIABLES
+-- =========================================================
+-- Safe access to global dimensions
+local simW = width
+local simH = height
+
+-- Histogram buffer (High Dynamic Range accumulator)
+local histogram = {}
+
+-- Parameters for De Jong Attractor
+-- x_next = sin(a * y) - cos(b * x)
+-- y_next = sin(c * x) - cos(d * y)
+local pa, pb, pc, pd = 1.4, -2.3, 2.4, -2.1 -- Base starting values
+
+-- Settings
+local s_density = 50000
+local s_exposure = 0.5
+local s_morph = 0.01
+local s_palIdx = 0
+local s_doBloom = 0
+
+-- Color Palettes
+local palettes = {
+    {{0.1,0.0,0.2}, {0.4,0.0,0.6}, {0.0,0.8,1.0}, {1.0,1.0,1.0}}, -- Cyber
+    {{0.1,0.0,0.0}, {0.6,0.2,0.0}, {1.0,0.8,0.0}, {1.0,1.0,0.8}}, -- Gold
+    {{0.0,0.1,0.1}, {0.2,0.3,0.3}, {0.6,0.7,0.8}, {0.9,0.9,1.0}}, -- Ghost
+    {{0.0,0.1,0.0}, {0.0,0.6,0.1}, {0.2,1.0,0.4}, {0.8,1.0,0.8}}, -- Matrix
+    {{0.1,0.0,0.0}, {0.5,0.0,0.0}, {0.9,0.1,0.1}, {1.0,0.6,0.6}}  -- Blood
+}
+
+-- =========================================================
+-- CORE FUNCTIONS
+-- =========================================================
+
+-- Robust Screen Clear (Replaces Dog_Clear for safety)
+local function clearCanvas()
+    set_rgb(0,0,0,0,0) -- Dummy call to init if needed
+    for y = 0, simH-1 do
+        for x = 0, simW-1 do
+            set_rgb(x, y, 0, 0, 0)
+        end
+    end
+end
+
+local function initHistogram()
+    histogram = {}
+    for y = 0, simH do
+        histogram[y] = {}
+        for x = 0, simW do
+            histogram[y][x] = 0
+        end
+    end
+end
+
+-- Linear interpolation for color
+local function getColor(val, pal)
+    -- Logarithmic tone mapping for HDR feel
+    local t = math.log(1 + val * s_exposure) * 0.5
+    t = math.max(0, math.min(1, t))
+    
+    local n = #pal
+    local segment = t * (n - 1)
+    local i1 = math.max(1, math.min(n, math.floor(segment) + 1))
+    local i2 = math.max(1, math.min(n, i1 + 1))
+    local blend = segment - math.floor(segment)
+    
+    return 
+        pal[i1][1] * (1 - blend) + pal[i2][1] * blend,
+        pal[i1][2] * (1 - blend) + pal[i2][2] * blend,
+        pal[i1][3] * (1 - blend) + pal[i2][3] * blend
+end
+
+-- The Chaos Engine
+local function renderAttractor(time_offset)
+    initHistogram()
+    
+    -- Morph parameters over time using sine waves
+    local t = time_offset * s_morph
+    local a = pa + math.sin(t) * 0.5
+    local b = pb + math.cos(t * 0.7) * 0.5
+    local c = pc + math.sin(t * 1.2) * 0.5
+    local d = pd + math.cos(t * 0.9) * 0.5
+    
+    local x, y = 0, 0
+    local scaleW = simW * 0.45
+    local scaleH = simH * 0.45
+    local offX = simW / 2
+    local offY = simH / 2
+    
+    -- 1. Accumulation Pass (The Mathematics)
+    -- We skip the first 20 iterations to let the point settle into the attractor
+    for i = 1, 20 do
+        local nx = math.sin(a * y) - math.cos(b * x)
+        local ny = math.sin(c * x) - math.cos(d * y)
+        x, y = nx, ny
+    end
+    
+    for i = 1, s_density do
+        -- De Jong Equations
+        local nx = math.sin(a * y) - math.cos(b * x)
+        local ny = math.sin(c * x) - math.cos(d * y)
+        x, y = nx, ny
+        
+        -- Map -2.0...2.0 to Screen Coords
+        local sx = math.floor(x * scaleW + offX)
+        local sy = math.floor(y * scaleH + offY)
+        
+        if sx >= 0 and sx < simW and sy >= 0 and sy < simH then
+            histogram[sy][sx] = histogram[sy][sx] + 1
+        end
+    end
+    
+    -- 2. Rendering Pass (The Art)
+    local pal = palettes[s_palIdx + 1]
+    
+    for y = 0, simH - 1 do
+        for x = 0, simW - 1 do
+            local h = histogram[y][x]
+            if h > 0 then
+                local r, g, b = getColor(h, pal)
+                -- We only draw if there is data, preserving black background
+                if (r+g+b) > 0.05 then
+                    set_rgb(x, y, r, g, b)
+                end
+            end
+        end
+        -- Progress bar update every 50 lines to keep UI responsive
+        if y % 50 == 0 then
+             -- Slight micro-sleep or yield if possible, otherwise just update logic
+        end
+    end
+end
+
+local function applyBloom()
+    if s_doBloom == 1 then
+        Dog_ShellExe('"Bloom_Advanced_pf.exe"')
+        Dog_GetBuffer()
+    end
+end
+
+local function updateSettings()
+    s_density = GUI_GetSettings(h_density) * 1500 -- Multiplier for heavy calculation
+    s_exposure = GUI_GetSettings(h_exposure) / 100.0
+    s_morph = GUI_GetSettings(h_morph) / 10.0
+    s_palIdx = GUI_GetSettings(h_palette)
+    s_doBloom = GUI_GetSettings(h_bloom)
+    
+    -- Randomize base seed based on scroll
+    local seedMod = GUI_GetSettings(h_chaos)
+    pa = 1.4 + (seedMod * 0.01)
+    pb = -2.3 - (seedMod * 0.01)
+end
+
+-- =========================================================
+-- MAIN LOOP
+-- =========================================================
+
+repeat
+    idx, retval, retstr = GUI_WaitOnEvent()
+    
+    if idx == h_preview then
+        updateSettings()
+        
+        -- Clear
+        clearCanvas()
+        
+        -- Render
+        renderAttractor(0)
+        Dog_Refresh()
+        
+        -- Post Process
+        applyBloom()
+        Dog_Refresh()
+        
+    elseif idx == h_animate then
+        updateSettings()
+        
+        for f = 0, totalFrames - 1 do
+            Dog_GotoFrame(f)
+            
+            -- Manual Clear to Black (Robust)
+            for cy = 0, simH-1 do
+                 for cx = 0, simW-1 do
+                      set_rgb(cx, cy, 0, 0, 0)
+                 end
+            end
+            
+            -- Render with time variable 'f'
+            renderAttractor(f)
+            Dog_Refresh()
+            
+            -- Post Process per frame
+            applyBloom()
+            Dog_Refresh()
+            
+            if f % 3 == 0 then
+                progress(f / totalFrames)
+            end
+        end
+        
+        progress(0)
+        Dog_MessageBox("Quantum sequence complete!")
+        break
+    end
+    
+until idx < 0
+
+GUI_ClosePanel()
+
+if idx == -2 then
+    Dog_RestoreUndo()
+    Dog_Refresh()
+end
