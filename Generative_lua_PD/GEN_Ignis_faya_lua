@@ -1,0 +1,281 @@
+-- =========================================================
+-- IGNIS ENGINE v3: Volumetric Fire Generator
+-- Fixed: Scaling issues on large canvases
+-- Added: Voxel Size control for "Chunky" paint look
+-- =========================================================
+
+local totalFrames = Dog_GetTotalFrames()
+
+if totalFrames <= 0 then
+    Dog_MessageBox("Please create an animation first!")
+    return
+end
+
+Dog_SaveUndo()
+
+-- =========================================================
+-- GUI SETUP
+-- =========================================================
+GUI_SetCaption("Ignis v3 - Volumetric Fire")
+
+GUI_AddControl("TextLabel", "Volumetric Scale (Crucial for Canvas Size)")
+local h_voxSize   = GUI_AddControl("Scroller", "Voxel/Brush Size", 3, 1, 15) -- Makes pixels BIGGER
+local h_density   = GUI_AddControl("Scroller", "Visual Density", 4, 1, 10)   -- How 'solid' the fire looks
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Combustion Physics")
+local h_height    = GUI_AddControl("Scroller", "Flame Height (%)", 60, 10, 150)
+local h_width     = GUI_AddControl("Scroller", "Source Width (%)", 40, 5, 100)
+local h_wind      = GUI_AddControl("Scroller", "Wind Force", 50, 0, 100) -- 50 is center (no wind)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Visual Style")
+local h_palette   = GUI_AddControl("Combobox", "Fire Chemistry")
+GUI_SetList(h_palette, 0, "Classic Wood Fire")
+GUI_SetList(h_palette, 1, "Gas Stove Blue")
+GUI_SetList(h_palette, 2, "Magic Fel Fire")
+GUI_SetList(h_palette, 3, "Plasma Violet")
+GUI_SetList(h_palette, 4, "Hellfire White")
+GUI_SetSettings(h_palette, 0, "Classic Wood Fire")
+
+local h_bloom     = GUI_AddControl("Checkbox", "Apply Post-Process Bloom")
+GUI_SetSettings(h_bloom, 1)
+
+GUI_AddControl("Line")
+local h_preview = GUI_AddControl("Button", "Preview Frame")
+local h_animate = GUI_AddControl("Button", "Render Sequence")
+
+GUI_OpenPanel()
+
+-- =========================================================
+-- CONFIG VARIABLES
+-- =========================================================
+local simW = width
+local simH = height
+local particles = {}
+
+-- Params
+local p_vox = 3
+local p_dens = 4
+local p_height = 60
+local p_width = 40
+local p_wind = 0
+local p_palIdx = 0
+local p_doBloom = 1
+
+-- Palettes
+local palettes = {
+    {{0.0,0.0,0.0}, {0.6,0.0,0.0}, {1.0,0.5,0.0}, {1.0,0.9,0.3}, {1.0,1.0,1.0}}, -- Classic
+    {{0.0,0.0,0.0}, {0.0,0.1,0.3}, {0.0,0.4,0.9}, {0.4,0.8,1.0}, {0.9,1.0,1.0}}, -- Blue
+    {{0.0,0.0,0.0}, {0.1,0.2,0.0}, {0.2,0.8,0.1}, {0.7,1.0,0.2}, {0.9,1.0,0.9}}, -- Fel
+    {{0.0,0.0,0.0}, {0.2,0.0,0.3}, {0.6,0.0,0.9}, {0.9,0.3,1.0}, {1.0,0.9,1.0}}, -- Plasma
+    {{0.0,0.0,0.0}, {0.4,0.4,0.4}, {0.7,0.7,0.7}, {0.9,0.9,0.9}, {1.0,1.0,1.0}}  -- White
+}
+
+-- =========================================================
+-- HELPER FUNCTIONS
+-- =========================================================
+
+local function getColor(t, pal)
+    t = math.max(0, math.min(1, t))
+    local n = #pal
+    local segment = t * (n - 1)
+    local i1 = math.max(1, math.min(n, math.floor(segment) + 1))
+    local i2 = math.max(1, math.min(n, i1 + 1))
+    local blend = segment - math.floor(segment)
+    return 
+        pal[i1][1] * (1 - blend) + pal[i2][1] * blend,
+        pal[i1][2] * (1 - blend) + pal[i2][2] * blend,
+        pal[i1][3] * (1 - blend) + pal[i2][3] * blend
+end
+
+local function spawnParticles()
+    -- Density scales spawn rate
+    local count = math.ceil(p_dens * 5) 
+    
+    local sourceX = simW / 2
+    local sourceY = simH - 5
+    -- Width is now percentage of screen width
+    local spread = (p_width / 100) * simW 
+    
+    for i = 1, count do
+        local angle = (math.random() - 0.5) 
+        particles[#particles + 1] = {
+            x = sourceX + (math.random() - 0.5) * spread,
+            y = sourceY + (math.random() * 10),
+            vx = math.sin(angle) * 0.5,
+            vy = - (math.random() * 1.0 + 0.5), 
+            age = 0,
+            life = 1.0, 
+            -- Decay is inverse to height (Low decay = Tall fire)
+            -- We scale this so 100% height roughly reaches top of screen
+            decay = (0.5 + math.random() * 0.5) / (p_height * 2) 
+        }
+    end
+end
+
+local function updatePhysics()
+    local windForce = (p_wind - 50) / 10.0 -- Range -5 to 5
+    local riseForce = 0.5 
+    
+    for i = #particles, 1, -1 do
+        local p = particles[i]
+        
+        -- Turbulence
+        p.vx = p.vx + (math.random() - 0.5) * 0.2
+        -- Wind
+        p.vx = p.vx + (windForce * 0.05)
+        -- Rise (Heat)
+        p.vy = p.vy - (riseForce * 0.1)
+        
+        -- Drag
+        p.vx = p.vx * 0.95
+        p.vy = p.vy * 0.98 
+        
+        p.x = p.x + p.vx
+        p.y = p.y + p.vy
+        
+        p.life = p.life - p.decay
+        
+        -- Optimization: Kill particles well outside screen
+        if p.life <= 0 or p.y < -50 or p.x < -50 or p.x > simW+50 then
+            table.remove(particles, i)
+        end
+    end
+end
+
+-- =========================================================
+-- VOLUMETRIC RENDERER (The Big Fix)
+-- =========================================================
+local function renderVolumetric()
+    local pal = palettes[p_palIdx + 1]
+    local radius = p_vox 
+    
+    for i = 1, #particles do
+        local p = particles[i]
+        
+        -- Only draw if onscreen-ish
+        if p.x > -radius and p.x < simW+radius and p.y > -radius and p.y < simH+radius then
+            local cx = math.floor(p.x)
+            local cy = math.floor(p.y)
+            
+            -- Dynamic color
+            local heat = p.life
+            if math.random() > 0.7 then heat = heat * 0.9 end
+            local r, g, b = getColor(heat, pal)
+            
+            -- Draw "Diamond" Shape (Faster than Circle, cleaner than Square)
+            -- This creates the "Volumetric" feel
+            for dy = -radius, radius do
+                local distY = math.abs(dy)
+                for dx = -radius, radius do
+                    local distX = math.abs(dx)
+                    
+                    -- Diamond equation: |dx| + |dy| <= radius
+                    if (distX + distY) <= radius then
+                        local px = cx + dx
+                        local py = cy + dy
+                        
+                        if px >= 0 and px < simW and py >= 0 and py < simH then
+                            -- Simple alpha blend simulation (lighter center)
+                            -- If it's the center pixel, full brightness
+                            if distX == 0 and distY == 0 then
+                                set_rgb(px, py, r, g, b)
+                            else
+                                -- Edges are slightly dimmed for smoothness
+                                set_rgb(px, py, r*0.8, g*0.8, b*0.8)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function applyBloom()
+    if p_doBloom == 1 then
+        Dog_ShellExe('"Bloom_Advanced_pf.exe"')
+        Dog_GetBuffer()
+    end
+end
+
+local function updateSettings()
+    p_vox   = GUI_GetSettings(h_voxSize)
+    p_dens  = GUI_GetSettings(h_density)
+    p_height= GUI_GetSettings(h_height)
+    p_width = GUI_GetSettings(h_width)
+    p_wind  = GUI_GetSettings(h_wind)
+    p_palIdx= GUI_GetSettings(h_palette)
+    p_doBloom = GUI_GetSettings(h_bloom)
+end
+
+-- =========================================================
+-- MAIN LOOP
+-- =========================================================
+
+repeat
+    idx, retval, retstr = GUI_WaitOnEvent()
+    
+    if idx == h_preview then
+        updateSettings()
+        particles = {} 
+        
+        -- Pre-warm based on height (taller fire needs longer warmup)
+        local warmup = math.floor(p_height * 1.5)
+        for i=1, warmup do
+            spawnParticles()
+            updatePhysics()
+        end
+        
+        -- Render
+        Dog_SetRGB(0,0,0)
+        Dog_Clear()
+        renderVolumetric()
+        Dog_Refresh()
+        
+        applyBloom()
+        Dog_Refresh()
+        
+    elseif idx == h_animate then
+        updateSettings()
+        particles = {}
+        
+        Dog_MessageBox("Pre-warming physics...")
+        local warmup = math.floor(p_height * 1.5)
+        for i=1, warmup do spawnParticles() updatePhysics() end
+        
+        for f = 0, totalFrames - 1 do
+            Dog_GotoFrame(f)
+            
+            -- Clear Black
+            for cy = 0, simH-1 do
+                for cx = 0, simW-1 do
+                    set_rgb(cx, cy, 0, 0, 0)
+                end
+            end
+            
+            spawnParticles()
+            updatePhysics()
+            
+            renderVolumetric()
+            Dog_Refresh()
+            applyBloom()
+            Dog_Refresh()
+            
+            if f % 5 == 0 then progress(f / totalFrames) end
+        end
+        
+        progress(0)
+        Dog_MessageBox("Volumetric Render Complete!")
+        break
+    end
+    
+until idx < 0
+
+GUI_ClosePanel()
+
+if idx == -2 then
+    Dog_RestoreUndo()
+    Dog_Refresh()
+end
