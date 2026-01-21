@@ -1,0 +1,260 @@
+-- =========================================================
+-- NEON GRAPH: 3D Lissajous & Harmonograph Generator
+-- Optimization: Removed slow Lua-glow for Shell Bloom
+-- =========================================================
+
+local totalFrames = Dog_GetTotalFrames()
+
+if totalFrames <= 0 then
+    Dog_MessageBox("Please create an animation first!")
+    return
+end
+
+Dog_SaveUndo()
+
+-- =========================================================
+-- GUI SETUP
+-- =========================================================
+GUI_SetCaption("Neon Graph Generator")
+
+GUI_AddControl("TextLabel", "Harmonics (Frequencies)")
+local h_freqX     = GUI_AddControl("Scroller", "Frequency X", 3, 1, 20)
+local h_freqY     = GUI_AddControl("Scroller", "Frequency Y", 5, 1, 20)
+local h_freqZ     = GUI_AddControl("Scroller", "Frequency Z (3D)", 4, 0, 20)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Physics & Motion")
+local h_phase     = GUI_AddControl("Scroller", "Phase Shift", 90, 0, 360)
+local h_damp      = GUI_AddControl("Scroller", "Damping (Decay)", 0, 0, 50) -- Spiral in
+local h_rot       = GUI_AddControl("Scroller", "3D Rotation Speed", 20, 0, 100)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Visual Style")
+local h_density   = GUI_AddControl("Scroller", "Line Resolution", 100, 50, 500)
+local h_palette   = GUI_AddControl("Combobox", "Neon Gas Type")
+GUI_SetList(h_palette, 0, "Rainbow Laser")
+GUI_SetList(h_palette, 1, "Cyber Cyan")
+GUI_SetList(h_palette, 2, "Hot Plasma")
+GUI_SetList(h_palette, 3, "Ultraviolet")
+GUI_SetList(h_palette, 4, "Golden Ratio")
+GUI_SetSettings(h_palette, 0, "Rainbow Laser")
+
+local h_bloom     = GUI_AddControl("Checkbox", "Apply Neon Glow (Post-Process)")
+GUI_SetSettings(h_bloom, 1)
+
+GUI_AddControl("Line")
+local h_preview = GUI_AddControl("Button", "Preview Frame")
+local h_animate = GUI_AddControl("Button", "Render Sequence")
+
+GUI_OpenPanel()
+
+-- =========================================================
+-- CONFIG & VARIABLES
+-- =========================================================
+local simW = width
+local simH = height
+
+-- Params
+local p_freqX, p_freqY, p_freqZ = 3, 5, 4
+local p_phase = 90
+local p_damp = 0
+local p_rot = 20
+local p_res = 100
+local p_palIdx = 0
+local p_doBloom = 1
+
+local palettes = {
+    {{1.0,0.0,0.0}, {1.0,0.5,0.0}, {1.0,1.0,0.0}, {0.0,1.0,0.5}, {0.0,0.5,1.0}, {0.5,0.0,1.0}}, -- Rainbow
+    {{0.0,0.1,0.2}, {0.0,0.4,0.6}, {0.0,0.8,1.0}, {0.5,0.9,1.0}, {0.8,1.0,1.0}}, -- Cyan
+    {{0.2,0.0,0.0}, {0.6,0.1,0.0}, {1.0,0.4,0.0}, {1.0,0.8,0.2}, {1.0,1.0,0.8}}, -- Plasma
+    {{0.1,0.0,0.3}, {0.4,0.0,0.8}, {0.7,0.0,1.0}, {1.0,0.0,1.0}, {1.0,0.6,1.0}}, -- UV
+    {{0.0,0.0,0.0}, {0.6,0.4,0.2}, {0.8,0.6,0.3}, {1.0,0.8,0.4}, {1.0,1.0,1.0}}  -- Gold
+}
+
+-- =========================================================
+-- MATH HELPERS
+-- =========================================================
+
+local function getGradientColor(t, pal)
+    t = t % 1.0 -- Loop safely
+    local n = #pal
+    local segment = t * (n - 1)
+    local i1 = math.max(1, math.min(n, math.floor(segment) + 1))
+    local i2 = math.max(1, math.min(n, i1 + 1))
+    local blend = segment - math.floor(segment)
+    return 
+        pal[i1][1] * (1 - blend) + pal[i2][1] * blend,
+        pal[i1][2] * (1 - blend) + pal[i2][2] * blend,
+        pal[i1][3] * (1 - blend) + pal[i2][3] * blend
+end
+
+-- Fast Line Drawing (Bresenham-ish)
+-- We don't need anti-aliasing here because the Bloom filter will smooth it later!
+local function drawLine(x1, y1, x2, y2, r, g, b)
+    local dx = x2 - x1
+    local dy = y2 - y1
+    local dist = math.sqrt(dx*dx + dy*dy)
+    if dist < 1 then return end
+    
+    local steps = math.ceil(dist)
+    local stepX = dx / steps
+    local stepY = dy / steps
+    
+    for i = 0, steps do
+        local px = math.floor(x1 + stepX * i)
+        local py = math.floor(y1 + stepY * i)
+        if px >= 0 and px < simW and py >= 0 and py < simH then
+            set_rgb(px, py, r, g, b)
+        end
+    end
+end
+
+-- 3D Projection Logic
+local function calculatePoint(t, time_offset)
+    local scale = math.min(simW, simH) * 0.4
+    
+    -- 1. Apply Damping (Spiral in)
+    -- As 't' increases, amplitude decreases if damping > 0
+    local amp = 1.0
+    if p_damp > 0 then
+        amp = math.exp(-t * (p_damp/500.0))
+    end
+    
+    scale = scale * amp
+    
+    -- 2. Basic Waveforms
+    local phaseRad = math.rad(p_phase)
+    -- X/Y/Z are calculated based on 't' (position along line) and 'time_offset' (animation frame)
+    local x = math.sin(p_freqX * t + phaseRad + time_offset) * scale
+    local y = math.sin(p_freqY * t + time_offset) * scale
+    local z = math.sin(p_freqZ * t) * scale -- Z depth
+    
+    -- 3. 3D Rotation (Rotate around Y axis)
+    local rotSpeed = math.rad(time_offset * p_rot)
+    local cosR = math.cos(rotSpeed)
+    local sinR = math.sin(rotSpeed)
+    
+    local rx = x * cosR - z * sinR
+    local rz = x * sinR + z * cosR
+    
+    -- 4. Project to 2D
+    -- Simple perspective: things further away (rz > 0) get smaller/closer to center
+    local depth = 1.0 / (2.0 + rz / simW) -- Fake perspective z-divide
+    
+    local screenX = simW / 2 + rx
+    local screenY = simH / 2 + y
+    
+    return screenX, screenY, depth
+end
+
+local function renderLissajous(frameTime)
+    local pal = palettes[p_palIdx + 1]
+    
+    -- Points: Higher density = smoother curves
+    local points = p_res * 10
+    local maxT = math.pi * 2 -- One full loop?
+    
+    -- If frequencies are not integers, we need more loops to close the curve
+    -- We'll just draw enough to look cool
+    maxT = math.pi * 8 
+    
+    local prevX, prevY = nil, nil
+    
+    for i = 0, points do
+        local t = (i / points) * maxT
+        local x, y, depth = calculatePoint(t, frameTime)
+        
+        -- Color cycle based on 't'
+        local colorT = (i / points) * 2.0 -- cycle twice
+        local r, g, b = getGradientColor(colorT, pal)
+        
+        -- Apply depth dimming (fog)
+        -- Further back (depth < 0.5) gets darker
+        local dim = math.max(0.2, math.min(1.0, depth + 0.5))
+        r, g, b = r*dim, g*dim, b*dim
+        
+        if prevX then
+            drawLine(prevX, prevY, x, y, r, g, b)
+        end
+        
+        prevX = x
+        prevY = y
+    end
+end
+
+local function applyBloom()
+    if p_doBloom == 1 then
+        Dog_ShellExe('"Bloom_Advanced_pf.exe"')
+        Dog_GetBuffer()
+    end
+end
+
+local function updateSettings()
+    p_freqX = GUI_GetSettings(h_freqX)
+    p_freqY = GUI_GetSettings(h_freqY)
+    p_freqZ = GUI_GetSettings(h_freqZ)
+    p_phase = GUI_GetSettings(h_phase)
+    p_damp  = GUI_GetSettings(h_damp)
+    p_rot   = GUI_GetSettings(h_rot)
+    p_res   = GUI_GetSettings(h_density)
+    p_palIdx= GUI_GetSettings(h_palette)
+    p_doBloom = GUI_GetSettings(h_bloom)
+end
+
+-- =========================================================
+-- MAIN LOOP
+-- =========================================================
+
+repeat
+    idx, retval, retstr = GUI_WaitOnEvent()
+    
+    if idx == h_preview then
+        updateSettings()
+        
+        -- Clear Black
+        Dog_SetRGB(0,0,0)
+        Dog_Clear()
+        
+        renderLissajous(0) -- Time 0
+        Dog_Refresh()
+        
+        applyBloom()
+        Dog_Refresh()
+        
+    elseif idx == h_animate then
+        updateSettings()
+        
+        for f = 0, totalFrames - 1 do
+            Dog_GotoFrame(f)
+            
+            -- Manual Clear
+            for cy = 0, simH-1 do
+                for cx = 0, simW-1 do
+                    set_rgb(cx, cy, 0, 0, 0)
+                end
+            end
+            
+            -- Time moves forward
+            local t_anim = f * 0.05
+            renderLissajous(t_anim)
+            
+            Dog_Refresh()
+            applyBloom()
+            Dog_Refresh()
+            
+            if f % 5 == 0 then progress(f / totalFrames) end
+        end
+        
+        progress(0)
+        Dog_MessageBox("Neon Graph Rendered!")
+        break
+    end
+    
+until idx < 0
+
+GUI_ClosePanel()
+
+if idx == -2 then
+    Dog_RestoreUndo()
+    Dog_Refresh()
+end
