@@ -1,0 +1,423 @@
+local totalFrames = Dog_GetTotalFrames()
+
+if totalFrames <= 0 then
+    Dog_MessageBox("Please create an animation first!")
+    return
+end
+
+Dog_SaveUndo()
+
+GUI_SetCaption("Mandelbulb: 3D Fractal Raymarcher")
+GUI_AddControl("TextLabel", "Camera")
+local h_rotationY = GUI_AddControl("Scroller", "Rotation Y", 0, -180, 180)
+local h_rotationX = GUI_AddControl("Scroller", "Rotation X", 0, -90, 90)
+local h_zoom = GUI_AddControl("Scroller", "Zoom", 25, 10, 50)
+local h_zoomText = GUI_AddControl("Text", "  Value:")
+GUI_SetSettings(h_zoomText, 25, "2.5")
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Fractal Parameters")
+local h_power = GUI_AddControl("Scroller", "Power", 8, 2, 16)
+local h_powerText = GUI_AddControl("Text", "  Value:")
+GUI_SetSettings(h_powerText, 8, "8 (Classic)")
+local h_iterations = GUI_AddControl("Scroller", "Detail Level", 12, 6, 20)
+local h_iterationsText = GUI_AddControl("Text", "  Value:")
+GUI_SetSettings(h_iterationsText, 12, "12 (Medium)")
+local h_bailout = GUI_AddControl("Scroller", "Size Limit", 20, 10, 50)
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Rendering")
+local h_maxSteps = GUI_AddControl("Scroller", "Ray Steps", 64, 32, 128)
+local h_maxStepsText = GUI_AddControl("Text", "  Value:")
+GUI_SetSettings(h_maxStepsText, 64, "64 (Medium)")
+local h_shadowSteps = GUI_AddControl("Scroller", "Shadow Quality", 16, 8, 32)
+local h_aoSamples = GUI_AddControl("Scroller", "Ambient Occlusion", 3, 0, 5)
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "Visual Style")
+local h_colorMode = GUI_AddControl("Combobox", "Color Mode")
+GUI_SetList(h_colorMode, 0, "Orbit Trap (Rainbow)")
+GUI_SetList(h_colorMode, 1, "Distance (Depth)")
+GUI_SetList(h_colorMode, 2, "Iterations (Heat)")
+GUI_SetList(h_colorMode, 3, "Normals (Surface)")
+GUI_SetList(h_colorMode, 4, "Monochrome")
+GUI_SetSettings(h_colorMode, 0, "Orbit Trap (Rainbow)")
+local h_brightness = GUI_AddControl("Scroller", "Brightness", 100, 50, 200)
+local h_brightnessText = GUI_AddControl("Text", "  Value:")
+GUI_SetSettings(h_brightnessText, 100, "100%")
+GUI_AddControl("Line")
+local h_preview = GUI_AddControl("Button", "Render Preview")
+local h_animate = GUI_AddControl("Button", "Generate Animation")
+
+GUI_OpenPanel()
+
+local rotationY = 0
+local rotationX = 0
+local zoom = 25
+local power = 8
+local iterations = 12
+local bailout = 20
+local maxSteps = 64
+local shadowSteps = 16
+local aoSamples = 3
+local colorMode = 0
+local brightness = 100
+
+local function mod(a, n)
+    return a - n * math.floor(a / n)
+end
+
+local renderBuffer = {}
+
+local function initRenderBuffer()
+    for y = 0, height - 1 do
+        renderBuffer[y] = {}
+        for x = 0, width - 1 do
+            renderBuffer[y][x] = {r=0, g=0, b=0}
+        end
+    end
+end
+
+local function mandelbulbDE(pos)
+    local x, y, z = pos.x, pos.y, pos.z
+    local dr = 1.0
+    local r = 0.0
+    local trap = 1000.0
+    local escapeIter = 0
+    
+    for i = 0, iterations - 1 do
+        r = math.sqrt(x*x + y*y + z*z)
+        
+        if r > bailout then
+            escapeIter = i
+            break
+        end
+        
+        trap = math.min(trap, r)
+        
+        local theta = math.atan2(math.sqrt(x*x + y*y), z)
+        local phi = math.atan2(y, x)
+        dr = math.pow(r, power - 1) * power * dr + 1.0
+        
+        local zr = math.pow(r, power)
+        theta = theta * power
+        phi = phi * power
+        
+        x = zr * math.sin(theta) * math.cos(phi)
+        y = zr * math.sin(theta) * math.sin(phi)
+        z = zr * math.cos(theta)
+        
+        x = x + pos.x
+        y = y + pos.y
+        z = z + pos.z
+        
+        escapeIter = i
+    end
+    
+    return 0.5 * math.log(r) * r / dr, trap, escapeIter
+end
+
+local function rotateY(p, angle)
+    local c = math.cos(angle)
+    local s = math.sin(angle)
+    return {
+        x = p.x * c - p.z * s,
+        y = p.y,
+        z = p.x * s + p.z * c
+    }
+end
+
+local function rotateX(p, angle)
+    local c = math.cos(angle)
+    local s = math.sin(angle)
+    return {
+        x = p.x,
+        y = p.y * c - p.z * s,
+        z = p.y * s + p.z * c
+    }
+end
+
+local function getNormal(p)
+    local eps = 0.001
+    local d = mandelbulbDE(p)
+    
+    local nx = mandelbulbDE({x=p.x+eps, y=p.y, z=p.z}) - mandelbulbDE({x=p.x-eps, y=p.y, z=p.z})
+    local ny = mandelbulbDE({x=p.x, y=p.y+eps, z=p.z}) - mandelbulbDE({x=p.x, y=p.y-eps, z=p.z})
+    local nz = mandelbulbDE({x=p.x, y=p.y, z=p.z+eps}) - mandelbulbDE({x=p.x, y=p.y, z=p.z-eps})
+    
+    local len = math.sqrt(nx*nx + ny*ny + nz*nz)
+    if len > 0 then
+        return {x=nx/len, y=ny/len, z=nz/len}
+    end
+    return {x=0, y=1, z=0}
+end
+
+local function calculateAO(p, n)
+    if aoSamples == 0 then return 1.0 end
+    
+    local ao = 0.0
+    local step = 0.1
+    
+    for i = 1, aoSamples do
+        local dist = step * i
+        local samplePos = {
+            x = p.x + n.x * dist,
+            y = p.y + n.y * dist,
+            z = p.z + n.z * dist
+        }
+        local sampleDist = mandelbulbDE(samplePos)
+        ao = ao + (dist - sampleDist) / math.pow(2, i)
+    end
+    
+    return 1.0 - math.min(1.0, ao)
+end
+
+local function getColor(trap, iter, normal)
+    local r, g, b = 0, 0, 0
+    
+    if colorMode == 0 then
+        local hue = mod(trap * 3.0, 1.0)
+        local h = hue * 6
+        local x = 1 - math.abs(mod(h, 2) - 1)
+        
+        if h < 1 then r, g, b = 1, x, 0
+        elseif h < 2 then r, g, b = x, 1, 0
+        elseif h < 3 then r, g, b = 0, 1, x
+        elseif h < 4 then r, g, b = 0, x, 1
+        elseif h < 5 then r, g, b = x, 0, 1
+        else r, g, b = 1, 0, x
+        end
+        
+    elseif colorMode == 1 then
+        local depth = math.min(1, trap)
+        r = 0.2 + depth * 0.6
+        g = 0.4 + depth * 0.6
+        b = 0.8 + depth * 0.2
+        
+    elseif colorMode == 2 then
+        local heat = iter / iterations
+        if heat < 0.5 then
+            r = heat * 2
+            g = 0
+            b = 1 - heat * 2
+        else
+            r = 1
+            g = (heat - 0.5) * 2
+            b = 0
+        end
+        
+    elseif colorMode == 3 then
+        r = normal.x * 0.5 + 0.5
+        g = normal.y * 0.5 + 0.5
+        b = normal.z * 0.5 + 0.5
+        
+    else
+        local intensity = 0.5 + trap * 0.5
+        r, g, b = intensity, intensity, intensity
+    end
+    
+    return r, g, b
+end
+
+local function raymarch(rayOrigin, rayDir, rotY, rotX)
+    local t = 0.0
+    local minDist = 1000.0
+    local trap = 1000.0
+    local iter = 0
+    
+    for step = 0, maxSteps - 1 do
+        local pos = {
+            x = rayOrigin.x + rayDir.x * t,
+            y = rayOrigin.y + rayDir.y * t,
+            z = rayOrigin.z + rayDir.z * t
+        }
+        
+        pos = rotateY(pos, rotY)
+        pos = rotateX(pos, rotX)
+        
+        local dist, tr, it = mandelbulbDE(pos)
+        trap = math.min(trap, tr)
+        iter = it
+        
+        if dist < 0.001 then
+            local normal = getNormal(pos)
+            
+            local lightDir = {x=1, y=1, z=1}
+            local lightLen = math.sqrt(3)
+            lightDir.x = lightDir.x / lightLen
+            lightDir.y = lightDir.y / lightLen
+            lightDir.z = lightDir.z / lightLen
+            
+            local diffuse = math.max(0, normal.x * lightDir.x + normal.y * lightDir.y + normal.z * lightDir.z)
+            
+            local ao = calculateAO(pos, normal)
+            
+            local r, g, b = getColor(trap, iter, normal)
+            
+            local lighting = 0.2 + diffuse * 0.6 + 0.2 * ao
+            
+            return r * lighting, g * lighting, b * lighting, true
+        end
+        
+        if t > 10.0 then break end
+        
+        t = t + dist * 0.9
+        minDist = math.min(minDist, dist)
+    end
+    
+    return 0, 0, 0, false
+end
+
+local function renderMandelbulb()
+    initRenderBuffer()
+    
+    local zoomVal = zoom / 10.0
+    local rotY = math.rad(rotationY)
+    local rotX = math.rad(rotationX)
+    
+    local rayOrigin = {x=0, y=0, z=-zoomVal}
+    
+    local aspect = width / height
+    
+    for y = 0, height - 1 do
+        for x = 0, width - 1 do
+            local u = (x / width - 0.5) * 2 * aspect
+            local v = (y / height - 0.5) * 2
+            
+            local rayDir = {x=u, y=-v, z=1}
+            local len = math.sqrt(rayDir.x*rayDir.x + rayDir.y*rayDir.y + rayDir.z*rayDir.z)
+            rayDir.x = rayDir.x / len
+            rayDir.y = rayDir.y / len
+            rayDir.z = rayDir.z / len
+            
+            local r, g, b, hit = raymarch(rayOrigin, rayDir, rotY, rotX)
+            
+            renderBuffer[y][x].r = r
+            renderBuffer[y][x].g = g
+            renderBuffer[y][x].b = b
+        end
+        
+        if y % 10 == 0 then
+            progress(y / height)
+        end
+    end
+    
+    local brightMult = brightness / 100
+    
+    for y = 0, height - 1 do
+        for x = 0, width - 1 do
+            local pixel = renderBuffer[y][x]
+            set_rgb(x, y, 
+                   math.min(1, pixel.r * brightMult),
+                   math.min(1, pixel.g * brightMult),
+                   math.min(1, pixel.b * brightMult))
+        end
+    end
+end
+
+repeat
+    idx, retval, retstr = GUI_WaitOnEvent()
+    
+    if idx == h_rotationY then
+        rotationY = GUI_GetSettings(h_rotationY)
+    elseif idx == h_rotationX then
+        rotationX = GUI_GetSettings(h_rotationX)
+    elseif idx == h_zoom then
+        zoom = GUI_GetSettings(h_zoom)
+        GUI_SetSettings(h_zoomText, zoom, string.format("%.1f", zoom / 10))
+    elseif idx == h_zoomText then
+        local _, valueStr = GUI_GetSettings(h_zoomText)
+        local valueNum = tonumber(valueStr)
+        if valueNum and valueNum >= 1 and valueNum <= 5 then
+            zoom = math.floor(valueNum * 10)
+            GUI_SetSettings(h_zoom, zoom, "")
+        end
+    elseif idx == h_power then
+        power = GUI_GetSettings(h_power)
+        local labels = {[2]="2 (Sphere)", [4]="4", [6]="6", [8]="8 (Classic)", [10]="10", [12]="12", [14]="14", [16]="16 (Spiky)"}
+        GUI_SetSettings(h_powerText, power, labels[power] or tostring(power))
+    elseif idx == h_powerText then
+        local _, valueStr = GUI_GetSettings(h_powerText)
+        local valueNum = tonumber(valueStr)
+        if valueNum and valueNum >= 2 and valueNum <= 16 then
+            power = valueNum
+            GUI_SetSettings(h_power, power, "")
+        end
+    elseif idx == h_iterations then
+        iterations = GUI_GetSettings(h_iterations)
+        local labels = {[6]="6 (Fast)", [8]="8", [10]="10", [12]="12 (Medium)", [14]="14", [16]="16 (High)", [18]="18", [20]="20 (Ultra)"}
+        GUI_SetSettings(h_iterationsText, iterations, labels[iterations] or tostring(iterations))
+    elseif idx == h_iterationsText then
+        local _, valueStr = GUI_GetSettings(h_iterationsText)
+        local valueNum = tonumber(valueStr)
+        if valueNum and valueNum >= 6 and valueNum <= 20 then
+            iterations = valueNum
+            GUI_SetSettings(h_iterations, iterations, "")
+        end
+    elseif idx == h_bailout then
+        bailout = GUI_GetSettings(h_bailout)
+    elseif idx == h_maxSteps then
+        maxSteps = GUI_GetSettings(h_maxSteps)
+        local labels = {[32]="32 (Fast)", [48]="48", [64]="64 (Medium)", [80]="80", [96]="96 (High)", [128]="128 (Ultra)"}
+        GUI_SetSettings(h_maxStepsText, maxSteps, labels[maxSteps] or tostring(maxSteps))
+    elseif idx == h_maxStepsText then
+        local _, valueStr = GUI_GetSettings(h_maxStepsText)
+        local valueNum = tonumber(valueStr)
+        if valueNum and valueNum >= 32 and valueNum <= 128 then
+            maxSteps = valueNum
+            GUI_SetSettings(h_maxSteps, maxSteps, "")
+        end
+    elseif idx == h_shadowSteps then
+        shadowSteps = GUI_GetSettings(h_shadowSteps)
+    elseif idx == h_aoSamples then
+        aoSamples = GUI_GetSettings(h_aoSamples)
+    elseif idx == h_colorMode then
+        colorMode = GUI_GetSettings(h_colorMode)
+    elseif idx == h_brightness then
+        brightness = GUI_GetSettings(h_brightness)
+        GUI_SetSettings(h_brightnessText, brightness, tostring(brightness) .. "%")
+    elseif idx == h_brightnessText then
+        local _, valueStr = GUI_GetSettings(h_brightnessText)
+        local valueNum = tonumber(valueStr)
+        if valueNum and valueNum >= 50 and valueNum <= 200 then
+            brightness = valueNum
+            GUI_SetSettings(h_brightness, brightness, "")
+        end
+    elseif idx == h_preview then
+        renderMandelbulb()
+        Dog_Refresh()
+        flush()
+        progress(0)
+        
+    elseif idx == h_animate then
+        local startRot = rotationY
+        
+        for frame = 0, totalFrames - 1 do
+            Dog_GotoFrame(frame)
+            
+            if totalFrames > 1 then
+                rotationY = startRot + (frame / totalFrames) * 360
+                rotationY = mod(rotationY, 360)
+            end
+            
+            renderMandelbulb()
+            Dog_Refresh()
+            
+            if frame % 3 == 0 then
+                progress(frame / totalFrames)
+            end
+        end
+        
+        rotationY = startRot
+        
+        progress(0)
+        Dog_MessageBox("3D fractal render complete!")
+        break
+    end
+    
+until idx < 0
+
+GUI_ClosePanel()
+
+if idx == -2 then
+    Dog_RestoreUndo()
+    Dog_GetBuffer()
+    Dog_Refresh()
+end
