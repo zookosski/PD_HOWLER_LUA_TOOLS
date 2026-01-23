@@ -1,0 +1,246 @@
+-- Z-Rings Warp - Canvas Displacement
+-- Rings WARP and ROTATE the canvas pixels
+-- No overlay - actual pixel displacement
+-- Created for PD Howler Community
+
+function hsv_to_rgb(h, s, v)
+    local c = v * s
+    local x = c * (1 - math.abs(((h / 60) % 2) - 1))
+    local m = v - c
+    
+    local r, g, b
+    if h < 60 then
+        r, g, b = c, x, 0
+    elseif h < 120 then
+        r, g, b = x, c, 0
+    elseif h < 180 then
+        r, g, b = 0, c, x
+    elseif h < 240 then
+        r, g, b = 0, x, c
+    elseif h < 300 then
+        r, g, b = x, 0, c
+    else
+        r, g, b = c, 0, x
+    end
+    
+    return r + m, g + m, b + m
+end
+
+function warp_canvas_with_rings(ring_count, ring_spacing, rotation_strength, hue_shift, hue_intensity, 
+                                 warp_mode, original_r, original_g, original_b)
+    local x, y
+    local x2, y2
+    local frequency = ring_count * 100
+    local spacing_mult = ring_spacing / 100
+    
+    for y = 0, height - 1 do
+        for x = 0, width - 1 do
+            x2 = ((x/width) - 0.5) * frequency
+            y2 = ((y/height) - 0.5) * frequency
+            
+            local distance = math.sqrt(x2*x2 + y2*y2)
+            local ring_value = math.sqrt(math.abs(math.cos(distance * 0.01745 * spacing_mult)))
+            
+            local sample_x = x
+            local sample_y = y
+            
+            if warp_mode == 1 then
+                local angle = math.atan2(y2, x2)
+                local warp_angle = angle + (ring_value * rotation_strength * 0.1)
+                local warp_dist = distance
+                local warp_x2 = warp_dist * math.cos(warp_angle)
+                local warp_y2 = warp_dist * math.sin(warp_angle)
+                sample_x = math.floor((warp_x2 / frequency + 0.5) * width)
+                sample_y = math.floor((warp_y2 / frequency + 0.5) * height)
+            elseif warp_mode == 2 then
+                local push = (ring_value - 0.5) * rotation_strength * 0.5
+                sample_x = math.floor(x + x2 * push * 0.01)
+                sample_y = math.floor(y + y2 * push * 0.01)
+            elseif warp_mode == 3 then
+                local angle = math.atan2(y2, x2)
+                local twist = ring_value * rotation_strength * 0.05
+                local new_x2 = x2 * math.cos(twist) - y2 * math.sin(twist)
+                local new_y2 = x2 * math.sin(twist) + y2 * math.cos(twist)
+                sample_x = math.floor((new_x2 / frequency + 0.5) * width)
+                sample_y = math.floor((new_y2 / frequency + 0.5) * height)
+            end
+            
+            sample_x = math.max(0, math.min(width - 1, sample_x))
+            sample_y = math.max(0, math.min(height - 1, sample_y))
+            
+            local r = original_r[sample_y * width + sample_x + 1]
+            local g = original_g[sample_y * width + sample_x + 1]
+            local b = original_b[sample_y * width + sample_x + 1]
+            
+            if hue_shift > 0 and hue_intensity > 0 then
+                local gray = (r + g + b) / 3
+                local r_tint, g_tint, b_tint = hsv_to_rgb(hue_shift, 1.0, 1.0)
+                r = r * (1 - hue_intensity) + r * r_tint * hue_intensity
+                g = g * (1 - hue_intensity) + g * g_tint * hue_intensity
+                b = b * (1 - hue_intensity) + b * b_tint * hue_intensity
+            end
+            
+            set_rgb(x, y, r, g, b)
+        end
+        
+        if y % 20 == 0 then
+            progress(y / height)
+        end
+    end
+    
+    progress(0)
+    Dog_Refresh()
+end
+
+function store_canvas()
+    local r_data = {}
+    local g_data = {}
+    local b_data = {}
+    
+    for y = 0, height - 1 do
+        for x = 0, width - 1 do
+            local r, g, b = get_rgb(x, y)
+            table.insert(r_data, r)
+            table.insert(g_data, g)
+            table.insert(b_data, b)
+        end
+    end
+    
+    return r_data, g_data, b_data
+end
+
+Dog_SaveUndo()
+
+GUI_SetCaption("Z-Rings Warp")
+
+GUI_AddControl("TextLabel", "═══ Ring Animation ═══")
+h_start = GUI_AddControl("Scroller", "Start Rings", 5, 1, 30)
+h_end = GUI_AddControl("Scroller", "End Rings", 20, 1, 30)
+h_spacing = GUI_AddControl("Scroller", "Ring Spacing", 100, 50, 200)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "═══ Warp Type ═══")
+h_warp = GUI_AddControl("Combobox", "Mode")
+GUI_SetList(h_warp, 0, "Spiral Twist")
+GUI_SetList(h_warp, 1, "Radial Push/Pull")
+GUI_SetList(h_warp, 2, "Ring Rotation")
+GUI_SetSettings(h_warp, 0, "Spiral Twist")
+
+h_strength = GUI_AddControl("Scroller", "Warp Strength", 50, 0, 100)
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "═══ Loop Type ═══")
+h_loop = GUI_AddControl("Combobox", "Pattern")
+GUI_SetList(h_loop, 0, "Linear")
+GUI_SetList(h_loop, 1, "Bounce")
+GUI_SetList(h_loop, 2, "Ease In-Out")
+GUI_SetSettings(h_loop, 0, "Linear")
+
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "═══ Color Tint ═══")
+h_hue = GUI_AddControl("Check", "Animate Hue", 0)
+h_hue_speed = GUI_AddControl("Scroller", "Hue Cycles", 1, 1, 10)
+h_hue_intensity = GUI_AddControl("Scroller", "Tint Intensity", 0, 0, 100)
+
+GUI_OpenPanel()
+
+local start_rings = 5
+local end_rings = 20
+local ring_spacing = 100
+local warp_mode = 1
+local warp_strength = 50
+local loop_type = 1
+local hue_animate = 0
+local hue_cycles = 1
+local hue_intensity = 0
+
+repeat
+    idx, retval, retstr = GUI_WaitOnEvent()
+    
+    if idx == h_start then
+        start_rings = GUI_GetSettings(h_start)
+    elseif idx == h_end then
+        end_rings = GUI_GetSettings(h_end)
+    elseif idx == h_spacing then
+        ring_spacing = GUI_GetSettings(h_spacing)
+    elseif idx == h_warp then
+        local dummy, warp_str = GUI_GetSettings(h_warp)
+        if warp_str:find("Spiral") then
+            warp_mode = 1
+        elseif warp_str:find("Radial") then
+            warp_mode = 2
+        else
+            warp_mode = 3
+        end
+    elseif idx == h_strength then
+        warp_strength = GUI_GetSettings(h_strength)
+    elseif idx == h_loop then
+        local dummy, loop_str = GUI_GetSettings(h_loop)
+        if loop_str:find("Linear") then
+            loop_type = 1
+        elseif loop_str:find("Bounce") then
+            loop_type = 2
+        else
+            loop_type = 3
+        end
+    elseif idx == h_hue then
+        hue_animate = GUI_GetSettings(h_hue)
+    elseif idx == h_hue_speed then
+        hue_cycles = GUI_GetSettings(h_hue_speed)
+    elseif idx == h_hue_intensity then
+        hue_intensity = GUI_GetSettings(h_hue_intensity) / 100
+    end
+    
+until idx < 0
+
+GUI_ClosePanel()
+
+if idx == -1 then
+    local total_frames = Dog_GetTotalFrames()
+    
+    if total_frames <= 0 then
+        Dog_MessageBox("Create Animation First", 
+                      "Animation > New Animation")
+        Dog_RestoreUndo()
+    else
+        Dog_MessageBox("Warping Canvas", 
+                      "Pixels will be twisted by ring pattern...")
+        
+        Dog_GotoFrame(0)
+        
+        for frame = 0, total_frames - 1 do
+            Dog_GotoFrame(frame)
+            
+            local canvas_r, canvas_g, canvas_b = store_canvas()
+            
+            local t = frame / (total_frames - 1)
+            local ring_count
+            
+            if loop_type == 1 then
+                ring_count = start_rings + (end_rings - start_rings) * t
+            elseif loop_type == 2 then
+                local bounce_t = (t < 0.5) and (t * 2) or ((1 - t) * 2)
+                ring_count = start_rings + (end_rings - start_rings) * bounce_t
+            else
+                local ease_t = t * t * (3 - 2 * t)
+                ring_count = start_rings + (end_rings - start_rings) * ease_t
+            end
+            
+            local hue = 0
+            if hue_animate == 1 then
+                hue = (t * 360 * hue_cycles) % 360
+            end
+            
+            warp_canvas_with_rings(ring_count, ring_spacing, warp_strength, hue, hue_intensity,
+                                   warp_mode, canvas_r, canvas_g, canvas_b)
+        end
+        
+        Dog_GotoFrame(0)
+        Dog_MessageBox("Warp Complete!", 
+                      "Canvas pixels warped by ring pattern!")
+    end
+elseif idx == -2 then
+    Dog_RestoreUndo()
+    Dog_GetBuffer()
+    Dog_Refresh()
+end
