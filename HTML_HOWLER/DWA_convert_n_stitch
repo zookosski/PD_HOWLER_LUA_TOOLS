@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DWA1 Studio — Multi-Sequence Editor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+--bg:#06060a;--s1:#0e0e16;--s2:#161620;--s3:#1e1e2c;
+--bd:#282840;--bd2:#3a3a55;
+--ac:#00dda0;--ac2:#00dda030;--ac3:#00dda015;
+--w:#ff5040;--w2:#ff504020;
+--ye:#ffc040;--ye2:#ffc04030;
+--tx:#d4d4e0;--dm:#4e4e66;--dm2:#3a3a50;
+--m:'JetBrains Mono',monospace;--s:'DM Sans',sans-serif;
+}
+body{background:var(--bg);color:var(--tx);font-family:var(--s);height:100vh;overflow:hidden;display:flex;flex-direction:column}
+
+.head{padding:12px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:12px;background:var(--s1);flex-shrink:0}
+.head h1{font-size:16px;font-weight:700;letter-spacing:-.3px}
+.head h1 em{font-style:normal;color:var(--ac);font-family:var(--m)}
+.head .tag{font-family:var(--m);font-size:9px;color:var(--ac);background:var(--ac2);padding:2px 8px;border-radius:3px;letter-spacing:.6px}
+.head .sp{margin-left:auto;display:flex;gap:6px}
+
+.body{display:grid;grid-template-columns:280px 1fr 240px;flex:1;overflow:hidden}
+
+.col{display:flex;flex-direction:column;overflow:hidden}
+.col-l{border-right:1px solid var(--bd);background:var(--s1)}
+.col-r{border-left:1px solid var(--bd);background:var(--s1)}
+
+.lbl{font-family:var(--m);font-size:8px;text-transform:uppercase;letter-spacing:1.4px;color:var(--dm);padding:10px 14px 6px}
+
+.drop-area{margin:8px 12px;border:2px dashed var(--bd);border-radius:5px;padding:20px 10px;text-align:center;cursor:pointer;transition:.2s;background:var(--s2);flex-shrink:0}
+.drop-area:hover,.drop-area.over{border-color:var(--ac);background:var(--ac3)}
+.drop-area p{font-size:11px;color:var(--dm);font-family:var(--m)}
+.drop-area p b{color:var(--ac)}
+
+.layers{flex:1;overflow-y:auto;padding:4px 8px}
+
+.layer{background:var(--s2);border:1px solid var(--bd);border-radius:5px;margin-bottom:4px;cursor:grab;transition:border-color .15s,background .15s;user-select:none}
+.layer:active{cursor:grabbing}
+.layer.selected{border-color:var(--ac);background:var(--ac3)}
+.layer.drag-over-top{border-top:2px solid var(--ac)}
+.layer.drag-over-bot{border-bottom:2px solid var(--ac)}
+
+.layer-head{display:flex;align-items:center;gap:6px;padding:6px 8px}
+.layer-head .grip{color:var(--dm2);font-size:10px;cursor:grab;padding:0 2px}
+.layer-head .vis{width:16px;height:16px;border:1px solid var(--bd);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:9px;flex-shrink:0;background:var(--s3)}
+.layer-head .vis.on{background:var(--ac2);border-color:var(--ac)}
+.layer-head .name{flex:1;font-family:var(--m);font-size:10px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.layer-head .info{font-family:var(--m);font-size:9px;color:var(--dm)}
+.layer-head .del{width:16px;height:16px;border:none;background:none;color:var(--dm);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;border-radius:2px}
+.layer-head .del:hover{color:var(--w);background:var(--w2)}
+
+.layer-strip{display:flex;gap:2px;padding:4px 8px 6px;overflow-x:auto}
+.layer-strip::-webkit-scrollbar{height:3px}
+.layer-strip::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
+.layer-strip canvas{border:1px solid var(--bd);border-radius:2px;cursor:pointer;image-rendering:pixelated;flex-shrink:0}
+.layer-strip canvas.active{border-color:var(--ye);box-shadow:0 0 4px var(--ye2)}
+
+.mid{display:flex;flex-direction:column;background:var(--bg)}
+
+.canvas-area{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;
+background-image:linear-gradient(45deg,#0c0c14 25%,transparent 25%),linear-gradient(-45deg,#0c0c14 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#0c0c14 75%),linear-gradient(-45deg,transparent 75%,#0c0c14 75%);
+background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
+.canvas-area canvas{image-rendering:pixelated}
+.canvas-area .empty{color:var(--dm);font-family:var(--m);font-size:12px;text-align:center;line-height:2}
+
+.timeline{flex-shrink:0;border-top:1px solid var(--bd);background:var(--s1);padding:8px 14px;display:flex;align-items:center;gap:10px}
+.timeline .pbtn{width:26px;height:26px;background:var(--ac);border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.timeline .pbtn svg{fill:var(--bg)}
+.timeline .sl{flex:1;-webkit-appearance:none;height:3px;background:var(--bd);border-radius:2px;outline:none}
+.timeline .sl::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;background:var(--ac);border-radius:50%;cursor:pointer}
+.timeline .fl{font-family:var(--m);font-size:10px;color:var(--dm);min-width:70px;text-align:right}
+
+.btn{font-family:var(--m);font-size:10px;font-weight:500;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;transition:.12s;letter-spacing:.2px;white-space:nowrap}
+.b1{background:var(--ac);color:var(--bg)}.b1:hover{filter:brightness(1.15)}.b1:disabled{opacity:.2;cursor:not-allowed}
+.b2{background:var(--s2);color:var(--tx);border:1px solid var(--bd)}.b2:hover{border-color:var(--ac)}
+.bw{background:var(--w2);color:var(--w);border:1px solid transparent}.bw:hover{border-color:var(--w)}
+
+.r-section{padding:8px 12px}
+.r-section+.r-section{border-top:1px solid var(--bd)}
+
+.cr{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.cr label{font-size:10px;font-family:var(--m);color:var(--dm);min-width:50px}
+.cr select,.cr input[type=number]{flex:1;background:var(--s2);border:1px solid var(--bd);color:var(--tx);font-family:var(--m);font-size:11px;padding:4px 6px;border-radius:3px;outline:none}
+.cr select:focus,.cr input:focus{border-color:var(--ac)}
+
+.export-btns{display:flex;flex-direction:column;gap:4px}
+.export-btns .btn{width:100%;text-align:center}
+
+.log{font-family:var(--m);font-size:9px;color:var(--dm);background:var(--s2);border:1px solid var(--bd);border-radius:4px;padding:6px 8px;max-height:80px;overflow-y:auto;line-height:1.5;margin:8px 12px}
+.log .g{color:var(--ac)}.log .r{color:var(--w)}.log .y{color:var(--ye)}
+
+.prog{height:3px;background:var(--bd);border-radius:2px;margin:4px 12px;overflow:hidden}
+.prog .bar{height:100%;background:var(--ac);transition:width .1s;width:0}
+</style>
+</head>
+<body>
+
+<div class="head">
+  <h1>DWA<em>1</em> Studio</h1>
+  <span class="tag">V3 MULTI-SEQ</span>
+  <div class="sp">
+    <button class="btn b2" id="btnHelp" title="Keyboard shortcuts">⌨ Keys</button>
+  </div>
+</div>
+
+<div class="body">
+<div class="col col-l">
+  <div class="lbl">Sequences</div>
+  <div class="drop-area" id="dz">
+    <p>Drop <b>.dwa</b> files here<br>or click to add</p>
+  </div>
+  <input type="file" id="fi" accept=".dwa" multiple hidden>
+  <div class="lbl" style="padding-top:4px">Layer Stack <span style="font-size:7px;opacity:.5">(drag to reorder)</span></div>
+  <div class="layers" id="layerList"></div>
+</div>
+
+<div class="col mid">
+  <div class="canvas-area" id="pw">
+    <div class="empty" id="emp">Load .dwa files to begin<br>Multiple sequences supported</div>
+    <canvas id="cv" style="display:none"></canvas>
+  </div>
+  <div class="timeline" id="tl" style="display:none">
+    <button class="pbtn" id="bPlay"><svg width="9" height="11" viewBox="0 0 9 11"><polygon points="0,0 9,5.5 0,11"/></svg></button>
+    <input type="range" class="sl" id="sl" min="0" max="0" value="0">
+    <span class="fl" id="flbl">0 / 0</span>
+  </div>
+</div>
+
+<div class="col col-r">
+  <div class="lbl">Playback</div>
+  <div class="r-section">
+    <div class="cr"><label>FPS</label><input type="number" id="fps" value="12" min="1" max="60"></div>
+    <div class="cr"><label>Zoom</label><select id="zoom"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="0">Fit</option></select></div>
+    <div class="cr"><label>Loop</label><select id="loopMode"><option value="loop">Loop</option><option value="pingpong">Ping-Pong</option><option value="once">Once</option></select></div>
+  </div>
+
+  <div class="lbl">Export</div>
+  <div class="r-section">
+    <div class="cr"><label>Range</label><select id="expRange"><option value="all">All Frames</option><option value="visible">Visible Only</option></select></div>
+    <div class="export-btns">
+      <button class="btn b1" id="bZip" disabled>📦 PNG as ZIP</button>
+      <button class="btn b1" id="bVid" disabled>🎬 Export Video</button>
+      <button class="btn b2" id="bSheet" disabled>🖼 Contact Sheet</button>
+    </div>
+    <div class="prog" id="progWrap" style="display:none"><div class="bar" id="progBar"></div></div>
+  </div>
+
+  <div class="lbl">Compose</div>
+  <div class="r-section">
+    <div class="export-btns">
+      <button class="btn b2" id="bMerge" disabled>Merge Visible ↓</button>
+      <button class="btn b2" id="bReverse" disabled>Reverse Selected</button>
+      <button class="btn b2" id="bDupe" disabled>Duplicate Selected</button>
+    </div>
+  </div>
+
+  <div class="lbl">Log</div>
+  <div class="log" id="logBox">Ready…</div>
+</div>
+</div>
+
+<script>
+const $=s=>document.getElementById(s);
+
+let sequences=[];
+let composedFrames=[];
+let curFrame=0;
+let playing=false,timer=null,pingDir=1;
+let selectedLayer=null;
+let dragSrc=null;
+
+function log(m,t=''){const e=$('logBox');e.innerHTML+=`<div class="${{ok:'g',err:'r',warn:'y'}[t]||''}">${m}</div>`;e.scrollTop=e.scrollHeight}
+function prog(v){$('progBar').style.width=`${v*100}%`;$('progWrap').style.display=v>0&&v<1?'':'none'}
+
+/* ── DWA1 PARSER ── */
+function parseDWA(buf,name){
+  const d=new Uint8Array(buf);
+  const magic=String.fromCharCode(d[0],d[1],d[2],d[3]);
+  if(magic!=='DWA1'){log(`${name}: not DWA1`,'err');return null}
+  const v=new DataView(buf);
+  const w=v.getUint32(8,true),h=v.getUint32(12,true),fc=v.getUint32(16,true);
+  const sw=w+1,sh=h+1,ps=sw*sh,HEADER=20;
+  const expected=HEADER+3*fc*ps;
+  if(d.length!==expected){log(`${name}: size mismatch ${d.length} vs ${expected}`,'err');return null}
+  
+  const frames=[];
+  for(let fi=0;fi<fc;fi++){
+    const c=document.createElement('canvas');c.width=w;c.height=h;
+    const ctx=c.getContext('2d');
+    const img=ctx.createImageData(w,h);
+    const px=img.data;
+    const rO=HEADER+(0*fc+fi)*ps;
+    const gO=HEADER+(1*fc+fi)*ps;
+    const bO=HEADER+(2*fc+fi)*ps;
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        const si=y*sw+x,di=(y*w+x)*4;
+        px[di]=d[rO+si]||0;px[di+1]=d[gO+si]||0;px[di+2]=d[bO+si]||0;px[di+3]=255;
+      }
+    }
+    ctx.putImageData(img,0,0);
+    frames.push(c);
+  }
+  return {name,w,h,fc,frames};
+}
+
+/* ── FILE LOADING ── */
+$('dz').onclick=()=>$('fi').click();
+$('dz').ondragover=e=>{e.preventDefault();$('dz').classList.add('over')};
+$('dz').ondragleave=()=>$('dz').classList.remove('over');
+$('dz').ondrop=e=>{e.preventDefault();$('dz').classList.remove('over');handleFiles(e.dataTransfer.files)};
+$('fi').onchange=e=>{if(e.target.files.length)handleFiles(e.target.files);$('fi').value=''};
+
+function handleFiles(files){
+  [...files].forEach(f=>{
+    const r=new FileReader();
+    r.onload=e=>{
+      const seq=parseDWA(e.target.result,f.name);
+      if(!seq)return;
+      seq.id=Date.now()+Math.random();
+      seq.visible=true;
+      seq.color=`hsl(${(sequences.length*67)%360},70%,60%)`;
+      sequences.push(seq);
+      log(`${f.name}: ${seq.w}×${seq.h}, ${seq.fc} frames`,'ok');
+      rebuildUI();
+    };
+    r.readAsArrayBuffer(f);
+  });
+}
+
+/* ── LAYER UI ── */
+function rebuildUI(){
+  const list=$('layerList');
+  list.innerHTML='';
+  
+  sequences.forEach((seq,i)=>{
+    const el=document.createElement('div');
+    el.className='layer'+(selectedLayer===seq.id?' selected':'');
+    el.dataset.idx=i;
+    el.draggable=true;
+    
+    el.innerHTML=`
+      <div class="layer-head">
+        <span class="grip">⠿</span>
+        <div class="vis ${seq.visible?'on':''}" data-id="${seq.id}">👁</div>
+        <span class="name" style="border-left:3px solid ${seq.color};padding-left:6px">${seq.name}</span>
+        <span class="info">${seq.fc}f</span>
+        <button class="del" data-id="${seq.id}">×</button>
+      </div>
+      <div class="layer-strip" data-id="${seq.id}"></div>
+    `;
+    
+    el.onclick=e=>{
+      if(e.target.classList.contains('vis')||e.target.classList.contains('del'))return;
+      selectedLayer=seq.id;
+      rebuildUI();
+    };
+    
+    /* drag reorder */
+    el.ondragstart=e=>{dragSrc=i;e.dataTransfer.effectAllowed='move'};
+    el.ondragover=e=>{
+      e.preventDefault();
+      const rect=el.getBoundingClientRect();
+      const mid=rect.top+rect.height/2;
+      el.classList.remove('drag-over-top','drag-over-bot');
+      el.classList.add(e.clientY<mid?'drag-over-top':'drag-over-bot');
+    };
+    el.ondragleave=()=>el.classList.remove('drag-over-top','drag-over-bot');
+    el.ondrop=e=>{
+      e.preventDefault();
+      el.classList.remove('drag-over-top','drag-over-bot');
+      if(dragSrc===null)return;
+      const rect=el.getBoundingClientRect();
+      const mid=rect.top+rect.height/2;
+      let target=e.clientY<mid?i:i+1;
+      if(dragSrc<target)target--;
+      if(dragSrc!==target){
+        const [moved]=sequences.splice(dragSrc,1);
+        sequences.splice(target,0,moved);
+        rebuildUI();
+      }
+      dragSrc=null;
+    };
+    
+    list.appendChild(el);
+    
+    /* thumbnails */
+    const strip=el.querySelector('.layer-strip');
+    seq.frames.forEach((f,fi)=>{
+      const t=document.createElement('canvas');
+      t.width=32;t.height=32;
+      t.getContext('2d').drawImage(f,0,0,32,32);
+      t.onclick=e=>{e.stopPropagation();selectedLayer=seq.id;jumpToGlobalFrame(seq,fi);rebuildUI()};
+      strip.appendChild(t);
+    });
+  });
+  
+  /* visibility toggles */
+  list.querySelectorAll('.vis').forEach(el=>{
+    el.onclick=e=>{
+      e.stopPropagation();
+      const seq=sequences.find(s=>s.id==el.dataset.id);
+      if(seq){seq.visible=!seq.visible;rebuildUI()}
+    };
+  });
+  
+  /* delete buttons */
+  list.querySelectorAll('.del').forEach(el=>{
+    el.onclick=e=>{
+      e.stopPropagation();
+      sequences=sequences.filter(s=>s.id!=el.dataset.id);
+      if(selectedLayer==el.dataset.id)selectedLayer=null;
+      rebuildUI();
+    };
+  });
+  
+  compose();
+}
+
+/* ── COMPOSITION ── */
+function compose(){
+  composedFrames=[];
+  const visible=sequences.filter(s=>s.visible);
+  if(!visible.length){
+    $('emp').style.display='';$('cv').style.display='none';$('tl').style.display='none';
+    $('bZip').disabled=$('bVid').disabled=$('bSheet').disabled=true;
+    $('bMerge').disabled=$('bReverse').disabled=$('bDupe').disabled=true;
+    return;
+  }
+  
+  visible.forEach(seq=>{
+    seq.frames.forEach(f=>composedFrames.push(f));
+  });
+  
+  $('emp').style.display='none';$('cv').style.display='';$('tl').style.display='';
+  $('bZip').disabled=$('bVid').disabled=$('bSheet').disabled=false;
+  $('bMerge').disabled=$('bReverse').disabled=$('bDupe').disabled=!selectedLayer;
+  
+  $('sl').max=composedFrames.length-1;
+  if(curFrame>=composedFrames.length)curFrame=0;
+  show(curFrame);
+  highlightStripFrame();
+}
+
+function jumpToGlobalFrame(seq,fi){
+  let offset=0;
+  for(const s of sequences.filter(s=>s.visible)){
+    if(s.id===seq.id){curFrame=offset+fi;show(curFrame);return}
+    offset+=s.frames.length;
+  }
+}
+
+function highlightStripFrame(){
+  document.querySelectorAll('.layer-strip canvas').forEach(c=>c.classList.remove('active'));
+  let offset=0;
+  for(const seq of sequences.filter(s=>s.visible)){
+    if(curFrame>=offset&&curFrame<offset+seq.frames.length){
+      const fi=curFrame-offset;
+      const strip=document.querySelector(`.layer-strip[data-id="${seq.id}"]`);
+      if(strip&&strip.children[fi]){
+        strip.children[fi].classList.add('active');
+        strip.children[fi].scrollIntoView({block:'nearest',inline:'center'});
+      }
+      break;
+    }
+    offset+=seq.frames.length;
+  }
+}
+
+/* ── DISPLAY ── */
+function show(i){
+  if(!composedFrames.length)return;
+  i=Math.max(0,Math.min(i,composedFrames.length-1));
+  curFrame=i;
+  const cv=$('cv'),src=composedFrames[i];
+  const z=parseInt($('zoom').value);
+  if(z===0){
+    const pw=$('pw');
+    const s=Math.min((pw.clientWidth-20)/src.width,(pw.clientHeight-20)/src.height,4);
+    cv.width=Math.round(src.width*s);cv.height=Math.round(src.height*s);
+  } else {cv.width=src.width*z;cv.height=src.height*z}
+  const ctx=cv.getContext('2d');ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(src,0,0,cv.width,cv.height);
+  $('sl').value=i;
+  $('flbl').textContent=`${i+1} / ${composedFrames.length}`;
+  highlightStripFrame();
+}
+
+$('sl').oninput=e=>show(parseInt(e.target.value));
+$('zoom').onchange=()=>show(curFrame);
+window.onresize=()=>{if(!parseInt($('zoom').value))show(curFrame)};
+
+/* ── PLAYBACK ── */
+$('bPlay').onclick=()=>playing?stopPlay():startPlay();
+
+function startPlay(){
+  playing=true;pingDir=1;
+  $('bPlay').innerHTML='<svg width="8" height="11" viewBox="0 0 8 11"><rect x="0" y="0" width="2.5" height="11"/><rect x="5.5" y="0" width="2.5" height="11"/></svg>';
+  tick();
+}
+
+function stopPlay(){
+  playing=false;
+  $('bPlay').innerHTML='<svg width="9" height="11" viewBox="0 0 9 11"><polygon points="0,0 9,5.5 0,11"/></svg>';
+  if(timer){cancelAnimationFrame(timer);timer=null}
+}
+
+let lastT=0;
+function tick(t){
+  if(!playing)return;
+  timer=requestAnimationFrame(tick);
+  const fps=parseInt($('fps').value)||12;
+  if(t-lastT<1000/fps)return;
+  lastT=t;
+  const mode=$('loopMode').value;
+  let n=curFrame+pingDir;
+  if(mode==='loop'){
+    if(n>=composedFrames.length)n=0;
+  } else if(mode==='pingpong'){
+    if(n>=composedFrames.length){pingDir=-1;n=composedFrames.length-2}
+    else if(n<0){pingDir=1;n=1}
+  } else {
+    if(n>=composedFrames.length){stopPlay();return}
+  }
+  show(n);
+}
+
+$('fps').onchange=()=>{};
+
+/* ── KEYBOARD ── */
+document.onkeydown=e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
+  if(e.key==='ArrowRight')show(curFrame+1);
+  if(e.key==='ArrowLeft')show(curFrame-1);
+  if(e.key===' '){e.preventDefault();$('bPlay').click()}
+  if(e.key==='Home')show(0);
+  if(e.key==='End')show(composedFrames.length-1);
+};
+
+/* ── COMPOSE TOOLS ── */
+$('bReverse').onclick=()=>{
+  const seq=sequences.find(s=>s.id===selectedLayer);
+  if(!seq)return;
+  seq.frames.reverse();
+  log(`Reversed: ${seq.name}`,'ok');
+  rebuildUI();
+};
+
+$('bDupe').onclick=()=>{
+  const seq=sequences.find(s=>s.id===selectedLayer);
+  if(!seq)return;
+  const clone={...seq,id:Date.now()+Math.random(),name:seq.name+' (copy)',frames:[...seq.frames],color:`hsl(${Math.random()*360},70%,60%)`};
+  const idx=sequences.indexOf(seq);
+  sequences.splice(idx+1,0,clone);
+  log(`Duplicated: ${seq.name}`,'ok');
+  rebuildUI();
+};
+
+$('bMerge').onclick=()=>{
+  const visible=sequences.filter(s=>s.visible);
+  if(visible.length<2)return;
+  const merged={id:Date.now(),name:'Merged',w:visible[0].w,h:visible[0].h,fc:0,frames:[],visible:true,color:'#ffffff'};
+  visible.forEach(s=>{merged.frames.push(...s.frames);merged.fc+=s.fc});
+  sequences=sequences.filter(s=>!s.visible);
+  sequences.unshift(merged);
+  selectedLayer=merged.id;
+  log(`Merged ${visible.length} sequences → ${merged.fc} frames`,'ok');
+  rebuildUI();
+};
+
+/* ── EXPORT: ZIP ── */
+$('bZip').onclick=async()=>{
+  const fr=getExportFrames();
+  if(!fr.length)return;
+  log(`Creating ZIP: ${fr.length} PNGs…`,'warn');
+  $('bZip').disabled=true;
+  
+  const zip=new JSZip();
+  const folder=zip.folder('dwa_frames');
+  
+  for(let i=0;i<fr.length;i++){
+    prog((i+1)/fr.length);
+    const blob=await canvasToBlob(fr[i]);
+    folder.file(`frame_${String(i+1).padStart(4,'0')}.png`,blob);
+  }
+  
+  const content=await zip.generateAsync({type:'blob'},meta=>prog(0.5+meta.percent/200));
+  downloadBlob(content,'dwa_frames.zip');
+  prog(0);
+  $('bZip').disabled=false;
+  log(`ZIP exported: ${fr.length} frames`,'ok');
+};
+
+/* ── EXPORT: VIDEO ── */
+$('bVid').onclick=async()=>{
+  const fr=getExportFrames();
+  if(!fr.length)return;
+  const fps=parseInt($('fps').value)||12;
+  log(`Recording video: ${fr.length} frames @ ${fps}fps…`,'warn');
+  $('bVid').disabled=true;
+  
+  const w=fr[0].width,h=fr[0].height;
+  const rec=document.createElement('canvas');
+  rec.width=w;rec.height=h;
+  const ctx=rec.getContext('2d');
+  
+  const stream=rec.captureStream(0);
+  const types=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm','video/mp4'];
+  let mimeType=types.find(t=>MediaRecorder.isTypeSupported(t))||'video/webm';
+  const recorder=new MediaRecorder(stream,{mimeType,videoBitsPerSecond:8000000});
+  const chunks=[];
+  recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+  
+  const done=new Promise(res=>{recorder.onstop=res});
+  recorder.start();
+  
+  for(let i=0;i<fr.length;i++){
+    ctx.drawImage(fr[i],0,0);
+    stream.getVideoTracks()[0].requestFrame?.();
+    prog((i+1)/fr.length);
+    await new Promise(r=>setTimeout(r,1000/fps));
+  }
+  
+  recorder.stop();
+  await done;
+  
+  const ext=mimeType.includes('mp4')?'mp4':'webm';
+  const blob=new Blob(chunks,{type:mimeType});
+  downloadBlob(blob,`dwa_animation.${ext}`);
+  prog(0);
+  $('bVid').disabled=false;
+  log(`Video exported: ${ext.toUpperCase()}, ${fr.length} frames @ ${fps}fps`,'ok');
+  if(ext==='webm')log('Tip: rename .webm → .mp4 or convert with ffmpeg','warn');
+};
+
+/* ── EXPORT: SHEET ── */
+$('bSheet').onclick=()=>{
+  const fr=getExportFrames();
+  if(!fr.length)return;
+  const cols=Math.ceil(Math.sqrt(fr.length));
+  const rows=Math.ceil(fr.length/cols);
+  const w=fr[0].width,h=fr[0].height;
+  const c=document.createElement('canvas');
+  c.width=cols*w;c.height=rows*h;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);
+  fr.forEach((f,i)=>ctx.drawImage(f,(i%cols)*w,Math.floor(i/cols)*h));
+  c.toBlob(b=>downloadBlob(b,'contact_sheet.png'));
+  log(`Contact sheet: ${cols}×${rows} grid`,'ok');
+};
+
+/* ── HELPERS ── */
+function getExportFrames(){
+  if($('expRange').value==='visible'){
+    const out=[];
+    sequences.filter(s=>s.visible).forEach(s=>out.push(...s.frames));
+    return out;
+  }
+  return composedFrames;
+}
+
+function canvasToBlob(c){return new Promise(r=>c.toBlob(b=>r(b),'image/png'))}
+
+function downloadBlob(blob,name){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=name;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
+
+/* ── HELP ── */
+$('btnHelp').onclick=()=>{
+  alert(`⌨ Keyboard Shortcuts:\n\nSpace — Play / Pause\n← → — Previous / Next frame\nHome — First frame\nEnd — Last frame\n\n🖱 Layer Panel:\nClick — Select layer\nDrag — Reorder layers\n👁 — Toggle visibility\n× — Remove layer`);
+};
+</script>
+</body>
+</html>
