@@ -1,0 +1,1136 @@
+if width == nil or height == nil then
+    print("Error: Must run inside PD Howler")
+    return
+end
+
+local total_frames = Dog_GetTotalFrames()
+if total_frames <= 0 then
+    Dog_MessageBox("Shapeshifter v3",
+                   "Please create an animation first!",
+                   "Recommended: 60-300 frames")
+    return
+end
+
+Dog_Refresh()
+Dog_SaveUndo()
+
+local m_sin = math.sin
+local m_cos = math.cos
+local m_sqrt = math.sqrt
+local m_floor = math.floor
+local m_ceil = math.ceil
+local m_max = math.max
+local m_min = math.min
+local m_abs = math.abs
+local m_pi = math.pi
+local m_atan2 = math.atan2
+local m_asin = math.asin
+local s_byte = string.byte
+local s_format = string.format
+local s_match = string.match
+
+local function clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+local function lerp(a, b, t)
+    return a + (b - a) * t
+end
+
+local function ease_out_quad(t)
+    return t * (2 - t)
+end
+
+local canvas_snap = nil
+local canvas_w = width
+local canvas_h = height
+
+local function snapshot_canvas()
+    canvas_snap = {}
+    local inv255 = 1.0
+    for cy = 0, height - 1 do
+        canvas_snap[cy] = {}
+        for cx = 0, width - 1 do
+            local r, g, b = get_rgb(cx, cy)
+            canvas_snap[cy][cx] = { r, g, b }
+        end
+    end
+    canvas_w = width
+    canvas_h = height
+end
+
+local function sample_canvas(u, v)
+    if not canvas_snap then return 0.5, 0.5, 0.5 end
+    u = u - m_floor(u)
+    v = v - m_floor(v)
+    if u < 0 then u = u + 1 end
+    if v < 0 then v = v + 1 end
+    local px = m_floor(u * (canvas_w - 1))
+    local py = m_floor(v * (canvas_h - 1))
+    if px < 0 then px = 0 end
+    if px >= canvas_w then px = canvas_w - 1 end
+    if py < 0 then py = 0 end
+    if py >= canvas_h then py = canvas_h - 1 end
+    local row = canvas_snap[py]
+    if not row then return 0.5, 0.5, 0.5 end
+    local pixel = row[px]
+    if not pixel then return 0.5, 0.5, 0.5 end
+    return pixel[1], pixel[2], pixel[3]
+end
+
+local function open_file_dialog(filter_desc, filter_ext)
+    local desc = filter_desc or "MIDI Files"
+    local ext = filter_ext or "*.mid;*.midi"
+    local ps_cmd = 'powershell -command "'
+        .. "Add-Type -AssemblyName System.Windows.Forms;"
+        .. "$f = New-Object System.Windows.Forms.OpenFileDialog;"
+        .. "$f.Title = 'Select MIDI File';"
+        .. "$f.Filter = '" .. desc .. "|" .. ext .. "|All Files|*.*';"
+        .. "if($f.ShowDialog() -eq 'OK'){$f.FileName}"
+        .. '"'
+    local h = io.popen(ps_cmd)
+    if h then
+        local path = h:read("*l")
+        h:close()
+        if path and path ~= "" then
+            return path
+        end
+    end
+    return nil
+end
+
+MIDI = {}
+
+function MIDI.read_bytes(file, n)
+    local data = file:read(n)
+    if not data or #data < n then return nil end
+    return data
+end
+
+function MIDI.read_u16(file)
+    local data = MIDI.read_bytes(file, 2)
+    if not data then return nil end
+    local b1, b2 = s_byte(data, 1, 2)
+    return b1 * 256 + b2
+end
+
+function MIDI.read_u32(file)
+    local data = MIDI.read_bytes(file, 4)
+    if not data then return nil end
+    local b1, b2, b3, b4 = s_byte(data, 1, 4)
+    return b1 * 16777216 + b2 * 65536 + b3 * 256 + b4
+end
+
+function MIDI.read_vlq(file)
+    local value = 0
+    for i = 1, 4 do
+        local byte_data = file:read(1)
+        if not byte_data then return nil end
+        local b = s_byte(byte_data)
+        value = value * 128 + (b % 128)
+        if b < 128 then
+            return value
+        end
+    end
+    return value
+end
+
+function MIDI.parse(filepath)
+    local file = io.open(filepath, "rb")
+    if not file then
+        return nil, "Cannot open file"
+    end
+
+    local header_id = MIDI.read_bytes(file, 4)
+    if header_id ~= "MThd" then
+        file:close()
+        return nil, "Not a MIDI file (no MThd header)"
+    end
+
+    local header_len = MIDI.read_u32(file)
+    local format = MIDI.read_u16(file)
+    local num_tracks = MIDI.read_u16(file)
+    local division = MIDI.read_u16(file)
+
+    if not division or division == 0 then
+        file:close()
+        return nil, "Invalid MIDI division"
+    end
+
+    local ticks_per_quarter = division
+    if division >= 32768 then
+        file:close()
+        return nil, "SMPTE timing not supported"
+    end
+
+    if header_len > 6 then
+        file:read(header_len - 6)
+    end
+
+    local all_events = {}
+    local tempo_map = {}
+
+    for track = 1, num_tracks do
+        local track_id = MIDI.read_bytes(file, 4)
+        if track_id ~= "MTrk" then
+            break
+        end
+
+        local track_len = MIDI.read_u32(file)
+        if not track_len then break end
+
+        local track_start = file:seek()
+        local track_end = track_start + track_len
+
+        local abs_tick = 0
+        local running_status = 0
+
+        while file:seek() < track_end do
+            local delta = MIDI.read_vlq(file)
+            if not delta then break end
+            abs_tick = abs_tick + delta
+
+            local peek = file:read(1)
+            if not peek then break end
+            local status = s_byte(peek)
+
+            if status >= 128 then
+                running_status = status
+            else
+                file:seek("cur", -1)
+                status = running_status
+            end
+
+            local event_type = m_floor(status / 16)
+            local channel = status % 16
+
+            if event_type == 9 then
+                local raw = file:read(2)
+                if not raw then break end
+                local note, vel = s_byte(raw, 1, 2)
+                all_events[#all_events + 1] = {
+                    tick = abs_tick,
+                    note = note,
+                    vel = vel,
+                    on = (vel > 0)
+                }
+
+            elseif event_type == 8 then
+                local raw = file:read(2)
+                if not raw then break end
+                local note, vel = s_byte(raw, 1, 2)
+                all_events[#all_events + 1] = {
+                    tick = abs_tick,
+                    note = note,
+                    vel = 0,
+                    on = false
+                }
+
+            elseif event_type == 10 or event_type == 11 or event_type == 14 then
+                file:read(2)
+
+            elseif event_type == 12 or event_type == 13 then
+                file:read(1)
+
+            elseif status == 255 then
+                local meta_type_raw = file:read(1)
+                if not meta_type_raw then break end
+                local meta_type = s_byte(meta_type_raw)
+                local meta_len = MIDI.read_vlq(file)
+                if not meta_len then break end
+
+                if meta_type == 81 and meta_len == 3 then
+                    local raw = file:read(3)
+                    if raw and #raw == 3 then
+                        local b1, b2, b3 = s_byte(raw, 1, 3)
+                        local us_per_quarter = b1 * 65536 + b2 * 256 + b3
+                        tempo_map[#tempo_map + 1] = {
+                            tick = abs_tick,
+                            us_per_quarter = us_per_quarter
+                        }
+                    end
+                elseif meta_type == 47 then
+                    if meta_len > 0 then file:read(meta_len) end
+                    break
+                else
+                    if meta_len > 0 then file:read(meta_len) end
+                end
+
+            elseif status >= 240 then
+                local sysex_len = MIDI.read_vlq(file)
+                if sysex_len and sysex_len > 0 then
+                    file:read(sysex_len)
+                end
+            end
+        end
+
+        file:seek("set", track_end)
+    end
+
+    file:close()
+
+    if #tempo_map == 0 then
+        tempo_map[1] = { tick = 0, us_per_quarter = 500000 }
+    end
+
+    table.sort(tempo_map, function(a, b) return a.tick < b.tick end)
+    table.sort(all_events, function(a, b) return a.tick < b.tick end)
+
+    return {
+        events = all_events,
+        tempo_map = tempo_map,
+        ticks_per_quarter = ticks_per_quarter,
+        num_tracks = num_tracks,
+        format = format
+    }
+end
+
+function MIDI.tick_to_seconds(tick, tempo_map, tpq)
+    local seconds = 0
+    local prev_tick = 0
+    local us_per_q = 500000
+
+    for i = 1, #tempo_map do
+        local tm = tempo_map[i]
+        if tm.tick >= tick then
+            break
+        end
+        seconds = seconds + (tm.tick - prev_tick) * us_per_q / (tpq * 1000000.0)
+        prev_tick = tm.tick
+        us_per_q = tm.us_per_quarter
+    end
+
+    seconds = seconds + (tick - prev_tick) * us_per_q / (tpq * 1000000.0)
+    return seconds
+end
+
+function MIDI.build_gate_envelopes(midi_data, target_notes, num_frames, fps, atk, dec, rel)
+    local events = midi_data.events
+    local tempo_map = midi_data.tempo_map
+    local tpq = midi_data.ticks_per_quarter
+    local attack = atk or 0.01
+    local decay_time = dec or 0.15
+    local release = rel or 0.20
+    local sustain_level = 0.3
+
+    if #events == 0 then
+        local empty = {}
+        for f = 0, num_frames - 1 do
+            empty[f] = {}
+            for _, tn in ipairs(target_notes) do
+                empty[f][tn] = 0
+            end
+        end
+        return empty, 0, 0, {}
+    end
+
+    local max_tick = 0
+    for i = 1, #events do
+        if events[i].tick > max_tick then max_tick = events[i].tick end
+    end
+    local total_seconds = MIDI.tick_to_seconds(max_tick, tempo_map, tpq) + 0.1
+
+    local timed_events = {}
+    local note_counts = {}
+    for _, tn in ipairs(target_notes) do
+        note_counts[tn] = 0
+    end
+
+    for i = 1, #events do
+        local ev = events[i]
+        local is_target = false
+        for _, tn in ipairs(target_notes) do
+            if ev.note == tn then is_target = true end
+        end
+        if is_target then
+            timed_events[#timed_events + 1] = {
+                time = MIDI.tick_to_seconds(ev.tick, tempo_map, tpq),
+                note = ev.note,
+                vel = ev.vel / 127.0,
+                on = ev.on
+            }
+            if ev.on then
+                note_counts[ev.note] = note_counts[ev.note] + 1
+            end
+        end
+    end
+
+    local gate_state = {}
+    for _, tn in ipairs(target_notes) do
+        gate_state[tn] = { active = false, vel = 0, on_time = 0, off_time = 0 }
+    end
+
+    local frames = {}
+    for f = 0, num_frames - 1 do
+        local frame_time = 0
+        if num_frames > 1 then
+            frame_time = (f / (num_frames - 1)) * total_seconds
+        end
+
+        for _, te in ipairs(timed_events) do
+            if te.time <= frame_time then
+                local gs = gate_state[te.note]
+                if te.on then
+                    gs.active = true
+                    gs.vel = te.vel
+                    gs.on_time = te.time
+                else
+                    gs.active = false
+                    gs.off_time = te.time
+                end
+            end
+        end
+
+        frames[f] = {}
+        for _, tn in ipairs(target_notes) do
+            local gs = gate_state[tn]
+            local env = 0
+
+            if gs.active then
+                local age = frame_time - gs.on_time
+                if age < attack then
+                    env = (age / attack) * gs.vel
+                elseif age < attack + decay_time then
+                    local decay_pos = (age - attack) / decay_time
+                    env = gs.vel * lerp(1.0, sustain_level, decay_pos)
+                else
+                    env = gs.vel * sustain_level
+                end
+            else
+                if gs.off_time > 0 then
+                    local since_off = frame_time - gs.off_time
+                    if since_off < release then
+                        env = gs.vel * sustain_level * (1.0 - since_off / release)
+                    end
+                end
+            end
+
+            frames[f][tn] = clamp(env, 0, 1)
+        end
+    end
+
+    local bpm = 120
+    if #tempo_map > 0 then
+        bpm = m_floor(60000000 / tempo_map[1].us_per_quarter + 0.5)
+    end
+
+    return frames, total_seconds, bpm, note_counts
+end
+
+local moods = {
+    { name = "Cyber",   core = {0.13, 0.83, 0.93}, sat = {0.06, 0.55, 0.75}, bg = {0.02, 0.02, 0.03}, light = {0.9, 0.95, 1.0},  rim = {1.0, 0.0, 1.0} },
+    { name = "Fire",    core = {0.98, 0.45, 0.09}, sat = {0.85, 0.25, 0.05}, bg = {0.06, 0.02, 0.02}, light = {1.0, 0.9, 0.7},  rim = {1.0, 0.2, 0.0} },
+    { name = "Matrix",  core = {0.06, 0.73, 0.51}, sat = {0.03, 0.55, 0.30}, bg = {0.0, 0.03, 0.0},  light = {0.7, 1.0, 0.7},  rim = {0.0, 1.0, 0.0} },
+    { name = "Pastel",  core = {0.96, 0.45, 0.71}, sat = {0.70, 0.50, 0.90}, bg = {0.04, 0.04, 0.07}, light = {1.0, 0.85, 0.95}, rim = {0.6, 0.6, 1.0} },
+    { name = "Void",    core = {0.60, 0.10, 0.90}, sat = {0.30, 0.05, 0.60}, bg = {0.01, 0.0, 0.02},  light = {0.8, 0.6, 1.0},  rim = {0.9, 0.0, 0.9} },
+    { name = "Gold",    core = {1.00, 0.85, 0.30}, sat = {0.80, 0.60, 0.10}, bg = {0.04, 0.03, 0.01}, light = {1.0, 0.95, 0.8},  rim = {1.0, 0.7, 0.2} },
+    { name = "Canvas",  core = {0.50, 0.50, 0.50}, sat = {0.50, 0.50, 0.50}, bg = {0.02, 0.02, 0.02}, light = {1.0, 1.0, 1.0},  rim = {0.3, 0.3, 0.3} },
+}
+
+GUI_SetCaption("Shapeshifter v3 - MIDI Reactive")
+GUI_AddControl("TextLabel", "=== Shape & Renderer ===")
+GUI_AddControl("Line")
+local h_primitive = GUI_AddControl("Combobox", "Primitive")
+GUI_SetList(h_primitive, 0, "Sphere")
+GUI_SetList(h_primitive, 1, "Cube")
+GUI_SetList(h_primitive, 2, "Plane")
+GUI_SetSettings(h_primitive, 0, "Sphere")
+local h_sensitivity = GUI_AddControl("Scroller", "Intensity", 50, 10, 100)
+local h_zoom = GUI_AddControl("Scroller", "Camera Distance", 60, 30, 120)
+local h_speed = GUI_AddControl("Scroller", "Anim Speed", 50, 10, 100)
+local h_sat_count = GUI_AddControl("Scroller", "Satellites", 6, 0, 12)
+GUI_AddControl("Line")
+local h_mood = GUI_AddControl("Combobox", "Mood / Texture")
+for i = 1, #moods do
+    GUI_SetList(h_mood, i - 1, moods[i].name)
+end
+GUI_SetSettings(h_mood, 0, moods[1].name)
+local h_driver = GUI_AddControl("Combobox", "Driver")
+GUI_SetList(h_driver, 0, "Pulse")
+GUI_SetList(h_driver, 1, "Wave")
+GUI_SetList(h_driver, 2, "Orbit")
+GUI_SetList(h_driver, 3, "Implode")
+GUI_SetSettings(h_driver, 0, "Pulse")
+local h_bg_style = GUI_AddControl("Combobox", "Background")
+GUI_SetList(h_bg_style, 0, "Solid")
+GUI_SetList(h_bg_style, 1, "Vignette")
+GUI_SetList(h_bg_style, 2, "Gradient")
+GUI_SetSettings(h_bg_style, 0, "Solid")
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "=== MIDI Input ===")
+local h_browse_midi = GUI_AddControl("Button", "Browse MIDI File...")
+local h_midi_display = GUI_AddControl("Text", "No MIDI loaded")
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "=== MIDI Mapping ===")
+local h_note_kick = GUI_AddControl("Scroller", "Kick Note (C2=36)", 36, 0, 127)
+local h_note_snare = GUI_AddControl("Scroller", "Snare Note (C3=48)", 48, 0, 127)
+local h_note_hat = GUI_AddControl("Scroller", "Hat Note (C4=60)", 60, 0, 127)
+local h_reactivity = GUI_AddControl("Scroller", "Reactivity", 50, 0, 100)
+GUI_AddControl("Line")
+GUI_AddControl("TextLabel", "=== Envelope Shape ===")
+local h_attack = GUI_AddControl("Scroller", "Attack ms", 10, 1, 200)
+local h_decay = GUI_AddControl("Scroller", "Decay ms", 150, 10, 500)
+local h_release = GUI_AddControl("Scroller", "Release ms", 200, 10, 1000)
+GUI_AddControl("Line")
+local h_snap_canvas = GUI_AddControl("Button", "Snapshot Canvas")
+local h_preview = GUI_AddControl("Button", "Preview Frame 0")
+local h_render = GUI_AddControl("Button", ">> RENDER ALL FRAMES <<")
+
+GUI_OpenPanel()
+
+local sensitivity = 50
+local zoom = 60
+local speed = 50
+local sat_count = 6
+local mood_idx = 0
+local driver_idx = 0
+local bg_style = 0
+local primitive_idx = 0
+local note_kick = 36
+local note_snare = 48
+local note_hat = 60
+local reactivity = 50
+local attack_ms = 10
+local decay_ms = 150
+local release_ms = 200
+local midi_data = nil
+local midi_loaded = false
+local midi_envelopes = nil
+local midi_duration = 0
+local midi_bpm = 120
+local midi_fname = ""
+local idx = 0
+
+local function rebuild_envelopes()
+    if not midi_data then return end
+    local target = { note_kick, note_snare, note_hat }
+    local atk = attack_ms / 1000.0
+    local dec = decay_ms / 1000.0
+    local rel = release_ms / 1000.0
+    local env, dur, bpm, counts = MIDI.build_gate_envelopes(
+        midi_data, target, total_frames, 30, atk, dec, rel
+    )
+    midi_envelopes = env
+    midi_duration = dur
+    midi_bpm = bpm
+    return counts
+end
+
+local inv_w = 1.0 / width
+local inv_h = 1.0 / height
+local aspect = width / height
+local half_w = width * 0.5
+local half_h = height * 0.5
+local max_vignette_dist = m_sqrt(half_w * half_w + half_h * half_h)
+local light_dx, light_dy, light_dz = 0.577, 0.577, 0.577
+
+local function shade(nx, ny, nz, br, bg_c, bb, rim_r, rim_g, rim_b, lr, lg, lb, extra_glow)
+    local ndotl = nx * light_dx + ny * light_dy + nz * light_dz
+    if ndotl < 0 then ndotl = 0 end
+    local ambient = 0.12 + extra_glow * 0.2
+    local diffuse = ndotl * (0.7 + extra_glow * 0.3)
+    local view_dot = nz
+    if view_dot < 0 then view_dot = 0 end
+    local rim = (1.0 - view_dot) ^ 3 * (0.6 + extra_glow * 0.8)
+    local r = br * (ambient + diffuse) * lr + rim_r * rim
+    local g = bg_c * (ambient + diffuse) * lg + rim_g * rim
+    local b = bb * (ambient + diffuse) * lb + rim_b * rim
+    return clamp(r, 0, 1), clamp(g, 0, 1), clamp(b, 0, 1)
+end
+
+local function rotate_y(px, py, pz, angle)
+    local c = m_cos(angle)
+    local s = m_sin(angle)
+    return px * c + pz * s, py, -px * s + pz * c
+end
+
+local function rotate_x(px, py, pz, angle)
+    local c = m_cos(angle)
+    local s = m_sin(angle)
+    return px, py * c - pz * s, py * s + pz * c
+end
+
+local function get_audio(frame, total, sens_f, speed_f, react_f)
+    local bass, mid, treble = 0, 0, 0
+
+    if midi_loaded and midi_envelopes and midi_envelopes[frame] then
+        local env = midi_envelopes[frame]
+        bass = (env[note_kick] or 0) * react_f
+        mid = (env[note_snare] or 0) * react_f
+        treble = (env[note_hat] or 0) * react_f
+    else
+        local t = (frame / total) * m_pi * 2 * 4 * speed_f
+        bass = (m_sin(t * 0.7) * 0.5 + 0.5)
+        mid = (m_sin(t * 1.3 + 1.0) * 0.5 + 0.5)
+        treble = (m_sin(t * 2.1 + 2.0) * 0.5 + 0.5)
+        bass = ease_out_quad(bass)
+        mid = ease_out_quad(mid)
+        treble = ease_out_quad(treble)
+        local contrast = 2.0
+        bass = (bass ^ contrast) * sens_f
+        mid = (mid ^ contrast) * sens_f
+        treble = (treble ^ contrast) * sens_f
+    end
+
+    return bass, mid, treble
+end
+
+local function sphere_uv(nx, ny, nz)
+    local u = 0.5 + m_atan2(nz, nx) / (2.0 * m_pi)
+    local v = 0.5 - m_asin(clamp(ny, -1, 1)) / m_pi
+    return u, v
+end
+
+local function ray_sphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, rad)
+    local ex = ox - cx
+    local ey = oy - cy
+    local ez = oz - cz
+    local b = 2 * (ex * dx + ey * dy + ez * dz)
+    local c = ex * ex + ey * ey + ez * ez - rad * rad
+    local disc = b * b - 4 * c
+    if disc < 0 then return -1, 0, 0, 0 end
+    local sq = m_sqrt(disc)
+    local t = (-b - sq) * 0.5
+    if t < 0.001 then return -1, 0, 0, 0 end
+    local inv_r = 1.0 / rad
+    local hx = (ox + dx * t - cx) * inv_r
+    local hy = (oy + dy * t - cy) * inv_r
+    local hz = (oz + dz * t - cz) * inv_r
+    return t, hx, hy, hz
+end
+
+local function ray_box(ox, oy, oz, dx, dy, dz, cx, cy, cz, half)
+    local tmin = -9999
+    local tmax = 9999
+    local nx, ny, nz = 0, 0, 0
+    local hit_axis = -1
+    local hit_sign = 1
+
+    local bx0 = cx - half
+    local bx1 = cx + half
+    if m_abs(dx) > 0.0001 then
+        local t1 = (bx0 - ox) / dx
+        local t2 = (bx1 - ox) / dx
+        local s = 1
+        if t1 > t2 then t1, t2 = t2, t1; s = -1 end
+        if t1 > tmin then tmin = t1; hit_axis = 0; hit_sign = s end
+        if t2 < tmax then tmax = t2 end
+        if tmin > tmax then return -1, 0, 0, 0, 0, 0 end
+    else
+        if ox < bx0 or ox > bx1 then return -1, 0, 0, 0, 0, 0 end
+    end
+
+    local by0 = cy - half
+    local by1 = cy + half
+    if m_abs(dy) > 0.0001 then
+        local t1 = (by0 - oy) / dy
+        local t2 = (by1 - oy) / dy
+        local s = 1
+        if t1 > t2 then t1, t2 = t2, t1; s = -1 end
+        if t1 > tmin then tmin = t1; hit_axis = 1; hit_sign = s end
+        if t2 < tmax then tmax = t2 end
+        if tmin > tmax then return -1, 0, 0, 0, 0, 0 end
+    else
+        if oy < by0 or oy > by1 then return -1, 0, 0, 0, 0, 0 end
+    end
+
+    local bz0 = cz - half
+    local bz1 = cz + half
+    if m_abs(dz) > 0.0001 then
+        local t1 = (bz0 - oz) / dz
+        local t2 = (bz1 - oz) / dz
+        local s = 1
+        if t1 > t2 then t1, t2 = t2, t1; s = -1 end
+        if t1 > tmin then tmin = t1; hit_axis = 2; hit_sign = s end
+        if t2 < tmax then tmax = t2 end
+        if tmin > tmax then return -1, 0, 0, 0, 0, 0 end
+    else
+        if oz < bz0 or oz > bz1 then return -1, 0, 0, 0, 0, 0 end
+    end
+
+    if tmin < 0.001 then return -1, 0, 0, 0, 0, 0 end
+
+    if hit_axis == 0 then
+        nx = -hit_sign
+    elseif hit_axis == 1 then
+        ny = -hit_sign
+    else
+        nz = -hit_sign
+    end
+
+    local hx = ox + dx * tmin - cx
+    local hy = oy + dy * tmin - cy
+    local hz = oz + dz * tmin - cz
+    local inv_half = 1.0 / half
+
+    local u, v
+    if hit_axis == 0 then
+        u = (hz * inv_half + 1.0) * 0.5
+        v = (hy * inv_half + 1.0) * 0.5
+    elseif hit_axis == 1 then
+        u = (hx * inv_half + 1.0) * 0.5
+        v = (hz * inv_half + 1.0) * 0.5
+    else
+        u = (hx * inv_half + 1.0) * 0.5
+        v = (hy * inv_half + 1.0) * 0.5
+    end
+
+    return tmin, nx, ny, nz, u, v
+end
+
+local function ray_plane(ox, oy, oz, dx, dy, dz, cx, cy, cz, half_w_p, half_h_p, pnx, pny, pnz)
+    local denom = dx * pnx + dy * pny + dz * pnz
+    if m_abs(denom) < 0.0001 then return -1, 0, 0, 0, 0, 0 end
+    local diff_x = cx - ox
+    local diff_y = cy - oy
+    local diff_z = cz - oz
+    local t = (diff_x * pnx + diff_y * pny + diff_z * pnz) / denom
+    if t < 0.001 then return -1, 0, 0, 0, 0, 0 end
+
+    local hx = ox + dx * t - cx
+    local hy = oy + dy * t - cy
+    local hz = oz + dz * t - cz
+
+    local right_x, right_y, right_z = 0, 0, 0
+    local up_x, up_y, up_z = 0, 0, 0
+    if m_abs(pny) > 0.9 then
+        right_x = 1; up_z = -1
+    elseif m_abs(pnx) > 0.9 then
+        right_z = 1; up_y = 1
+    else
+        right_x = 1; up_y = 1
+    end
+
+    local lu = hx * right_x + hy * right_y + hz * right_z
+    local lv = hx * up_x + hy * up_y + hz * up_z
+
+    if m_abs(lu) > half_w_p or m_abs(lv) > half_h_p then
+        return -1, 0, 0, 0, 0, 0
+    end
+
+    local u = (lu / half_w_p + 1.0) * 0.5
+    local v = (lv / half_h_p + 1.0) * 0.5
+
+    return t, pnx, pny, pnz, u, v
+end
+
+local function build_scene(frame, total, bass, mid, treble, speed_f, react_f, cur_mood, p_sat_count, p_driver_idx)
+    local t = (frame / total) * m_pi * 2 * speed_f
+    local shapes = {}
+
+    local core_scale = 1.0 + bass * 1.2
+    local core_ry = 0
+    local core_posy = 0
+
+    if p_driver_idx == 0 then
+        core_ry = t * 0.5
+    elseif p_driver_idx == 1 then
+        core_posy = m_sin(t * 1.5) * 0.5
+        core_ry = t * 0.3
+    elseif p_driver_idx == 2 then
+        core_ry = t * 0.8 + bass * 0.5
+    elseif p_driver_idx == 3 then
+        core_ry = t * 0.5
+    end
+
+    local glow = mid * react_f
+    local core_cr = clamp(cur_mood.core[1] + glow * 0.4, 0, 1)
+    local core_cg = clamp(cur_mood.core[2] + glow * 0.3, 0, 1)
+    local core_cb = clamp(cur_mood.core[3] + glow * 0.3, 0, 1)
+
+    shapes[1] = {
+        x = 0, y = core_posy, z = 0,
+        radius = core_scale,
+        cr = core_cr, cg = core_cg, cb = core_cb,
+        is_core = true
+    }
+
+    local orbit_radius = 2.5
+    if p_driver_idx == 3 then
+        orbit_radius = m_max(0.6, 2.5 - bass * 2.0)
+    end
+    if p_driver_idx == 2 then
+        orbit_radius = 2.5 * (1.0 + mid * 1.5)
+    end
+
+    local hat_jitter_amp = treble * react_f * 0.8
+
+    for i = 0, p_sat_count - 1 do
+        local angle = 0
+        if p_sat_count > 0 then
+            angle = (i / p_sat_count) * m_pi * 2
+        end
+        local orbit_speed = t * 0.4
+        if p_driver_idx == 2 then
+            orbit_speed = t * 0.5 + treble * 0.5
+        end
+        local sa = angle + orbit_speed
+
+        local sx = m_cos(sa) * orbit_radius
+        local sy = m_sin(sa) * orbit_radius
+        local sz = 0
+
+        if p_driver_idx == 1 then
+            sy = m_sin(t * 2 + i) * (1.0 + bass * 1.5)
+            sz = m_sin(sa) * orbit_radius
+            sx = m_cos(sa) * orbit_radius
+        end
+
+        local jitter_y = m_sin(t * 12 + i * 2.3) * hat_jitter_amp
+        sy = sy + jitter_y
+
+        local sat_scale = 0.3 + treble * 0.25
+
+        local sat_glow = mid * react_f * 0.5
+        local sat_cr = clamp(cur_mood.sat[1] + sat_glow * 0.3, 0, 1)
+        local sat_cg = clamp(cur_mood.sat[2] + sat_glow * 0.3, 0, 1)
+        local sat_cb = clamp(cur_mood.sat[3] + sat_glow * 0.3, 0, 1)
+
+        shapes[i + 2] = {
+            x = sx, y = sy + core_posy, z = sz,
+            radius = sat_scale,
+            cr = sat_cr, cg = sat_cg, cb = sat_cb,
+            is_core = false
+        }
+    end
+
+    local zoom_push = bass * react_f * 1.5
+    return shapes, core_ry, zoom_push, glow
+end
+
+local function do_render(frame_start, frame_end, p_sensitivity, p_zoom, p_speed, p_sat_count, p_mood_idx, p_driver_idx, p_bg_style, p_reactivity, p_primitive_idx, is_preview)
+    local sens_f = p_sensitivity / 50.0
+    local zoom_f = p_zoom / 10.0
+    local speed_f = p_speed / 50.0
+    local react_f = p_reactivity / 50.0
+    local cur_mood = moods[p_mood_idx + 1] or moods[1]
+    local use_canvas_tex = (cur_mood.name == "Canvas")
+
+    if use_canvas_tex and not canvas_snap then
+        Dog_MessageBox("Canvas texture not ready!",
+            "Hit 'Snapshot Canvas' first",
+            "to capture your canvas as texture")
+        return
+    end
+
+    local total_render = frame_end - frame_start + 1
+
+    for frame = frame_start, frame_end do
+        Dog_GotoFrame(frame)
+
+        local bass, mid, treble = get_audio(frame, total_frames, sens_f, speed_f, react_f)
+        local shapes, rot_y_angle, zoom_push, glow = build_scene(frame, total_frames, bass, mid, treble, speed_f, react_f, cur_mood, p_sat_count, p_driver_idx)
+
+        local cam_z = m_max(2.0, zoom_f - zoom_push)
+
+        local bg_r = cur_mood.bg[1]
+        local bg_g = cur_mood.bg[2]
+        local bg_b = cur_mood.bg[3]
+        local bg_pulse = bass * 0.05 + glow * 0.02
+        bg_r = clamp(bg_r + bg_pulse, 0, 1)
+        bg_g = clamp(bg_g + bg_pulse, 0, 1)
+        bg_b = clamp(bg_b + bg_pulse, 0, 1)
+
+        local shape_count = #shapes
+
+        local rot_cos = m_cos(rot_y_angle)
+        local rot_sin = m_sin(rot_y_angle)
+
+        local rotated = {}
+        for s = 1, shape_count do
+            local sh = shapes[s]
+            local rx = sh.x * rot_cos + sh.z * rot_sin
+            local ry = sh.y
+            local rz = -sh.x * rot_sin + sh.z * rot_cos
+            rotated[s] = {
+                x = rx, y = ry, z = rz,
+                radius = sh.radius,
+                r_sq = sh.radius * sh.radius,
+                cr = sh.cr, cg = sh.cg, cb = sh.cb,
+                is_core = sh.is_core
+            }
+        end
+
+        for y = 0, height - 1 do
+            local ndy_base = (1.0 - 2.0 * y * inv_h)
+
+            for x = 0, width - 1 do
+                local ndx = (2.0 * x * inv_w - 1.0) * aspect
+                local ndy = ndy_base
+
+                local ray_len = m_sqrt(ndx * ndx + ndy * ndy + 1.0)
+                local rdx = ndx / ray_len
+                local rdy = ndy / ray_len
+                local rdz = -1.0 / ray_len
+
+                local best_t = 9999
+                local best_nx, best_ny, best_nz = 0, 0, 0
+                local best_cr, best_cg, best_cb = 0, 0, 0
+                local best_u, best_v = 0, 0
+                local hit = false
+
+                for s = 1, shape_count do
+                    local rs = rotated[s]
+
+                    if p_primitive_idx == 0 then
+                        local ex = 0 - rs.x
+                        local ey = 0 - rs.y
+                        local ez = cam_z - rs.z
+                        local b = 2 * (ex * rdx + ey * rdy + ez * rdz)
+                        local c = ex * ex + ey * ey + ez * ez - rs.r_sq
+                        local disc = b * b - 4 * c
+                        if disc >= 0 then
+                            local sq = m_sqrt(disc)
+                            local t = (-b - sq) * 0.5
+                            if t > 0.001 and t < best_t then
+                                best_t = t
+                                local inv_r = 1.0 / rs.radius
+                                best_nx = (rdx * t - rs.x) * inv_r
+                                best_ny = (rdy * t - rs.y) * inv_r
+                                best_nz = (cam_z + rdz * t - rs.z) * inv_r
+                                best_cr = rs.cr
+                                best_cg = rs.cg
+                                best_cb = rs.cb
+                                if use_canvas_tex then
+                                    best_u, best_v = sphere_uv(best_nx, best_ny, best_nz)
+                                end
+                                hit = true
+                            end
+                        end
+
+                    elseif p_primitive_idx == 1 then
+                        local t, bnx, bny, bnz, bu, bv = ray_box(
+                            0, 0, cam_z,
+                            rdx, rdy, rdz,
+                            rs.x, rs.y, rs.z,
+                            rs.radius
+                        )
+                        if t > 0 and t < best_t then
+                            best_t = t
+                            best_nx = bnx
+                            best_ny = bny
+                            best_nz = bnz
+                            best_cr = rs.cr
+                            best_cg = rs.cg
+                            best_cb = rs.cb
+                            best_u = bu
+                            best_v = bv
+                            hit = true
+                        end
+
+                    elseif p_primitive_idx == 2 then
+                        local pnx_r = -rot_sin
+                        local pny_r = 0
+                        local pnz_r = rot_cos
+
+                        local plane_half = rs.radius * 1.5
+                        local plane_half_h = rs.radius * 1.5 * (height / width)
+
+                        local t, bnx, bny, bnz, bu, bv = ray_plane(
+                            0, 0, cam_z,
+                            rdx, rdy, rdz,
+                            rs.x, rs.y, rs.z,
+                            plane_half, plane_half_h,
+                            pnx_r, pny_r, pnz_r
+                        )
+                        if t > 0 and t < best_t then
+                            best_t = t
+                            best_nx = bnx
+                            best_ny = bny
+                            best_nz = bnz
+                            best_cr = rs.cr
+                            best_cg = rs.cg
+                            best_cb = rs.cb
+                            best_u = bu
+                            best_v = bv
+                            hit = true
+                        end
+                    end
+                end
+
+                local pr, pg, pb
+
+                if hit then
+                    local shade_cr = best_cr
+                    local shade_cg = best_cg
+                    local shade_cb = best_cb
+
+                    if use_canvas_tex then
+                        local tr, tg, tb = sample_canvas(best_u, best_v)
+                        shade_cr = tr
+                        shade_cg = tg
+                        shade_cb = tb
+                    end
+
+                    pr, pg, pb = shade(
+                        best_nx, best_ny, best_nz,
+                        shade_cr, shade_cg, shade_cb,
+                        cur_mood.rim[1], cur_mood.rim[2], cur_mood.rim[3],
+                        cur_mood.light[1], cur_mood.light[2], cur_mood.light[3],
+                        glow
+                    )
+                else
+                    pr = bg_r
+                    pg = bg_g
+                    pb = bg_b
+                end
+
+                if p_bg_style == 1 then
+                    local ddx = x - half_w
+                    local ddy = y - half_h
+                    local dist = m_sqrt(ddx * ddx + ddy * ddy) / max_vignette_dist
+                    local vig = 1.0 - dist * dist * 0.7
+                    if vig < 0 then vig = 0 end
+                    pr = pr * vig
+                    pg = pg * vig
+                    pb = pb * vig
+                elseif p_bg_style == 2 and not hit then
+                    local grad_t = y * inv_h
+                    pr = lerp(pr * 1.5, pr * 0.3, grad_t)
+                    pg = lerp(pg * 1.5, pg * 0.3, grad_t)
+                    pb = lerp(pb * 1.5, pb * 0.3, grad_t)
+                end
+
+                set_rgb(x, y, clamp(pr, 0, 1), clamp(pg, 0, 1), clamp(pb, 0, 1))
+            end
+
+            if y % 40 == 0 then
+                if is_preview then
+                    progress(y / height)
+                else
+                    progress(((frame - frame_start) * height + y) / (total_render * height))
+                end
+            end
+        end
+
+        Dog_Refresh()
+    end
+
+    progress(0)
+end
+
+repeat
+    idx, retval, retstr = GUI_WaitOnEvent()
+
+    if idx == h_sensitivity then sensitivity = GUI_GetSettings(h_sensitivity) end
+    if idx == h_zoom then zoom = GUI_GetSettings(h_zoom) end
+    if idx == h_speed then speed = GUI_GetSettings(h_speed) end
+    if idx == h_sat_count then sat_count = GUI_GetSettings(h_sat_count) end
+    if idx == h_mood then mood_idx = GUI_GetSettings(h_mood) end
+    if idx == h_driver then driver_idx = GUI_GetSettings(h_driver) end
+    if idx == h_bg_style then bg_style = GUI_GetSettings(h_bg_style) end
+    if idx == h_primitive then primitive_idx = GUI_GetSettings(h_primitive) end
+    if idx == h_note_kick then
+        note_kick = GUI_GetSettings(h_note_kick)
+        if midi_loaded then rebuild_envelopes() end
+    end
+    if idx == h_note_snare then
+        note_snare = GUI_GetSettings(h_note_snare)
+        if midi_loaded then rebuild_envelopes() end
+    end
+    if idx == h_note_hat then
+        note_hat = GUI_GetSettings(h_note_hat)
+        if midi_loaded then rebuild_envelopes() end
+    end
+    if idx == h_reactivity then reactivity = GUI_GetSettings(h_reactivity) end
+    if idx == h_attack then
+        attack_ms = GUI_GetSettings(h_attack)
+        if midi_loaded then rebuild_envelopes() end
+    end
+    if idx == h_decay then
+        decay_ms = GUI_GetSettings(h_decay)
+        if midi_loaded then rebuild_envelopes() end
+    end
+    if idx == h_release then
+        release_ms = GUI_GetSettings(h_release)
+        if midi_loaded then rebuild_envelopes() end
+    end
+
+    if idx == h_browse_midi then
+        local path = open_file_dialog("MIDI Files", "*.mid;*.midi")
+        if path then
+            local t1 = os.clock()
+            local data, err = MIDI.parse(path)
+            local t2 = os.clock()
+            if data then
+                midi_data = data
+                midi_loaded = true
+                local counts = rebuild_envelopes()
+                midi_fname = s_match(path, "([^\\]+)$") or path
+
+                GUI_SetSettings(h_midi_display, 0,
+                    midi_fname .. " | BPM:" .. midi_bpm)
+
+                local c_kick = (counts and counts[note_kick]) or 0
+                local c_snare = (counts and counts[note_snare]) or 0
+                local c_hat = (counts and counts[note_hat]) or 0
+                local ideal_frames = m_floor(midi_duration * 30 + 0.5)
+
+                Dog_MessageBox("MIDI Loaded!",
+                    "File: " .. midi_fname,
+                    "BPM: " .. midi_bpm .. " | Duration: " .. s_format("%.1f", midi_duration) .. "s",
+                    "Parse time: " .. s_format("%.3f", t2 - t1) .. "s",
+                    "Kick(n" .. note_kick .. "): " .. c_kick,
+                    "Snare(n" .. note_snare .. "): " .. c_snare,
+                    "Hat(n" .. note_hat .. "): " .. c_hat,
+                    "Ideal @30fps: " .. ideal_frames .. " | Timeline: " .. total_frames)
+            else
+                Dog_MessageBox("MIDI Load Failed!", err or "Unknown error")
+            end
+        end
+    end
+
+    if idx == h_snap_canvas then
+        Dog_RestoreUndo()
+        Dog_GetBuffer()
+        snapshot_canvas()
+        Dog_MessageBox("Canvas Snapshot Taken!",
+            "Size: " .. canvas_w .. "x" .. canvas_h,
+            "Stored as texture for 'Canvas' mood",
+            "Now select 'Canvas' in Mood dropdown")
+    end
+
+    if idx == h_preview then
+        do_render(0, 0, sensitivity, zoom, speed, sat_count, mood_idx, driver_idx, bg_style, reactivity, primitive_idx, true)
+        Dog_GotoFrame(0)
+        Dog_MessageBox("Preview done (frame 0)",
+            "Primitive: " .. (primitive_idx == 0 and "Sphere" or (primitive_idx == 1 and "Cube" or "Plane")),
+            "Mood: " .. moods[mood_idx + 1].name,
+            "MIDI: " .. (midi_loaded and midi_fname or "sine fallback"))
+    end
+
+    if idx == h_render then
+        local mode_str = "Sine"
+        if midi_loaded then mode_str = midi_fname .. " @" .. midi_bpm .. "bpm" end
+        local prim_names = { "Sphere", "Cube", "Plane" }
+
+        Dog_MessageBox("Rendering " .. total_frames .. " frames...",
+            "Primitive: " .. (prim_names[primitive_idx + 1] or "Sphere"),
+            "Mood: " .. moods[mood_idx + 1].name,
+            "Driver: " .. driver_idx .. " | " .. mode_str,
+            "Envelope: A" .. attack_ms .. " D" .. decay_ms .. " R" .. release_ms)
+
+        do_render(0, total_frames - 1, sensitivity, zoom, speed, sat_count, mood_idx, driver_idx, bg_style, reactivity, primitive_idx, false)
+
+        Dog_GotoFrame(0)
+        Dog_SaveUndo()
+        Dog_MessageBox("Render Complete!",
+            total_frames .. " frames rendered",
+            "Primitive: " .. (prim_names[primitive_idx + 1] or "Sphere"),
+            "Hit Render again or tweak sliders",
+            "Cancel to exit")
+    end
+
+    if idx == -1 then
+        idx = 0
+    end
+
+until idx == -2
+
+GUI_ClosePanel()
+
+Dog_RestoreUndo()
+Dog_GetBuffer()
+Dog_Refresh()
