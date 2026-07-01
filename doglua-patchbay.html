@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DogLua Patchbay</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=DM+Serif+Display&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07080b;--panel:#0d1015;--panel2:#0a0c11;--b1:#1c2230;--b2:#2a3244;
+  --tx:#7a86a3;--txh:#c9d3ea;
+  --exec:#eef1fb;--num:#00e5ff;--bool:#ff2e88;--str:#ffcc33;
+  --flow:#4a9dff;--logic:#ff2e88;--math:#00e5ff;--pix:#38f2a0;--anim:#ffb020;--io:#ff5f56;
+}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);user-select:none;-webkit-user-select:none}
+body{display:flex;flex-direction:column;font-family:'Share Tech Mono',monospace;color:var(--tx);font-size:11px}
+.node,.node-head,.pin-lbl,.pal-item,.btn{-webkit-user-drag:none;user-drag:none}
+.pin-def,.param-row input,.param-row select{user-select:text;-webkit-user-select:text}
+
+/* ── TOP BAR ── */
+#top{
+  height:44px;min-height:44px;display:flex;align-items:center;gap:10px;
+  padding:0 14px;background:var(--panel);border-bottom:1px solid var(--b1);
+}
+#top .logo{font-family:'DM Serif Display',serif;font-size:17px;color:var(--exec);letter-spacing:.03em;display:flex;align-items:baseline;gap:8px}
+#top .logo small{font-family:'Share Tech Mono',monospace;font-size:8px;letter-spacing:.2em;color:var(--tx);text-transform:uppercase}
+.btn{
+  padding:6px 11px;background:transparent;border:1px solid var(--b2);color:var(--tx);
+  font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:.06em;cursor:pointer;
+  transition:all .12s;white-space:nowrap;text-transform:uppercase;
+}
+.btn:hover{border-color:var(--exec);color:var(--exec)}
+.btn.acc{border-color:var(--flow);color:var(--flow)}
+.btn.acc:hover{background:rgba(74,157,255,.1)}
+.btn.warn{border-color:var(--io);color:var(--io)}
+.btn.warn:hover{background:rgba(255,95,86,.1)}
+#top .spacer{flex:1}
+#zoom-lbl{font-size:9px;color:var(--tx);min-width:42px;text-align:center}
+
+/* ── MAIN LAYOUT ── */
+#main{flex:1;display:flex;min-height:0}
+
+/* ── PALETTE ── */
+#palette{
+  width:184px;min-width:184px;background:var(--panel);border-right:1px solid var(--b1);
+  overflow-y:auto;overflow-x:hidden;padding-bottom:20px;
+}
+#palette::-webkit-scrollbar{width:3px}
+#palette::-webkit-scrollbar-thumb{background:var(--b2)}
+.pal-cat{padding:9px 12px 4px;font-size:8px;letter-spacing:.2em;text-transform:uppercase;opacity:.55}
+.pal-item{
+  margin:3px 8px;padding:6px 8px;border:1px solid var(--b1);border-left-width:3px;cursor:pointer;
+  font-size:9.5px;letter-spacing:.03em;color:var(--txh);transition:all .12s;
+}
+.pal-item:hover{background:rgba(255,255,255,.03);transform:translateX(2px)}
+
+/* ── CANVAS ── */
+#canvas-wrap{flex:1;position:relative;overflow:hidden;background:var(--bg);cursor:default}
+#canvas-wrap.panning{cursor:grabbing}
+#world{position:absolute;top:0;left:0;width:1px;height:1px;transform-origin:0 0}
+#bgdots{position:absolute;top:-4000px;left:-4000px;width:12000px;height:12000px;pointer-events:none;
+  background-image:radial-gradient(circle,rgba(122,134,163,.16) 1px,transparent 1px);
+  background-size:26px 26px;}
+svg#wires{position:absolute;top:0;left:0;width:1px;height:1px;overflow:visible;pointer-events:none}
+#nodes-layer{position:absolute;top:0;left:0}
+
+/* nodes */
+.node{
+  position:absolute;width:196px;background:var(--panel2);border:1px solid var(--b2);
+  box-shadow:0 4px 18px rgba(0,0,0,.45);user-select:none;
+}
+.node.sel{box-shadow:0 0 0 1px var(--exec),0 4px 18px rgba(0,0,0,.5)}
+.node-head{
+  padding:6px 8px;font-size:9.5px;letter-spacing:.08em;color:var(--txh);cursor:grab;
+  display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--b1);
+  border-left:4px solid var(--b2);
+}
+.node-head:active{cursor:grabbing}
+.node-del{background:none;border:none;color:var(--tx);font-size:12px;cursor:pointer;line-height:1;padding:0 2px}
+.node-del:hover{color:var(--io)}
+.node-body{padding:6px 0}
+.pins-row{display:flex;justify-content:space-between}
+.pins-col{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
+.pins-col.out{align-items:flex-end}
+.pin-row{display:flex;align-items:center;gap:4px;padding:3px 0;position:relative;min-height:16px}
+.pins-col.out .pin-row{flex-direction:row-reverse}
+.pin-dot{
+  width:9px;height:9px;border-radius:50%;border:1.5px solid currentColor;background:var(--panel2);
+  flex-shrink:0;cursor:crosshair;transition:transform .1s;
+}
+.pin-dot:hover{transform:scale(1.4)}
+.pin-dot.exec{border-radius:2px;transform:rotate(45deg)}
+.pin-dot.exec:hover{transform:rotate(45deg) scale(1.4)}
+.pin-dot.connected{background:currentColor}
+.pins-col.in .pin-dot{margin-left:-5px}
+.pins-col.out .pin-dot{margin-right:-5px}
+.pin-lbl{font-size:8.5px;color:var(--tx);letter-spacing:.03em;white-space:nowrap}
+.pin-def{
+  width:44px;background:var(--panel);border:1px solid var(--b1);color:var(--txh);
+  font-family:'Share Tech Mono',monospace;font-size:8.5px;padding:1px 3px;outline:none;
+}
+.pin-def:focus{border-color:var(--num)}
+.params{padding:4px 8px 2px;border-top:1px solid var(--b1);margin-top:4px}
+.param-row{display:flex;flex-direction:column;gap:2px;margin:4px 0}
+.param-row label{font-size:8px;color:var(--tx);letter-spacing:.06em;text-transform:uppercase}
+.param-row select,.param-row input[type=text],.param-row input[type=number]{
+  background:var(--panel);border:1px solid var(--b1);color:var(--txh);
+  font-family:'Share Tech Mono',monospace;font-size:9px;padding:3px 4px;outline:none;width:100%;
+}
+.param-row select:focus,.param-row input:focus{border-color:var(--flow)}
+.param-row.chk{flex-direction:row;align-items:center;gap:6px}
+.param-row.chk input{width:auto}
+
+/* ── CODE PANEL ── */
+#code-panel{
+  width:380px;min-width:280px;max-width:640px;background:var(--panel);border-left:1px solid var(--b1);
+  display:flex;flex-direction:column;
+}
+#code-head{
+  padding:7px 12px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:8px;
+}
+#code-head .st{font-size:8px;letter-spacing:.2em;text-transform:uppercase;opacity:.5;flex:1}
+#code-out{
+  flex:1;overflow:auto;padding:12px;font-size:10.5px;line-height:1.65;color:#b9e6d8;
+  white-space:pre;font-family:'Share Tech Mono',monospace;
+}
+#code-out .err{color:var(--io)}
+#resizer{width:4px;cursor:ew-resize;background:transparent}
+#resizer:hover{background:var(--b2)}
+
+/* misc */
+#hint{
+  position:absolute;bottom:8px;left:8px;font-size:8px;color:rgba(122,134,163,.55);
+  letter-spacing:.06em;line-height:1.8;pointer-events:none;
+}
+#toast{
+  position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:9px;letter-spacing:.12em;
+  text-transform:uppercase;padding:5px 14px;border:1px solid var(--b2);background:rgba(13,16,21,.94);
+  opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap;color:var(--txh)
+}
+#toast.show{opacity:1}
+dialog{background:var(--panel2);border:1px solid var(--b2);color:var(--txh);font-family:'Share Tech Mono',monospace;padding:16px;min-width:260px}
+dialog input{width:100%;background:var(--panel);border:1px solid var(--b1);color:var(--txh);padding:6px 8px;font-family:inherit;font-size:11px;margin:8px 0;outline:none}
+dialog input:focus{border-color:var(--flow)}
+dialog .row{display:flex;gap:6px;justify-content:flex-end;margin-top:6px}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+#saved-list{max-height:160px;overflow-y:auto;margin:6px 0}
+.saved-row{display:flex;align-items:center;gap:6px;padding:4px 2px;border-bottom:1px solid var(--b1);font-size:10px}
+.saved-row span{flex:1;cursor:pointer;color:var(--txh)}
+.saved-row span:hover{color:var(--flow)}
+.saved-row button{background:none;border:none;color:var(--tx);cursor:pointer;font-size:11px}
+.saved-row button:hover{color:var(--io)}
+</style>
+</head>
+<body>
+
+<div id="top">
+  <div class="logo">DOGLUA PATCHBAY<small>node graph → howler script</small></div>
+  <button class="btn" id="btn-run">▶ GENERATE</button>
+  <button class="btn acc" id="btn-copy">COPY LUA</button>
+  <button class="btn" id="btn-dl">↓ .LUA</button>
+  <span class="spacer"></span>
+  <button class="btn" id="btn-example">EXAMPLE</button>
+  <button class="btn" id="btn-save">SAVE</button>
+  <button class="btn" id="btn-load">LOAD</button>
+  <button class="btn warn" id="btn-clear">CLEAR</button>
+  <span id="zoom-lbl">100%</span>
+</div>
+
+<div id="main">
+  <div id="palette"></div>
+
+  <div id="canvas-wrap">
+    <div id="world">
+      <div id="bgdots"></div>
+      <svg id="wires"><g id="wires-g"></g></svg>
+      <div id="nodes-layer"></div>
+    </div>
+    <div id="hint">DRAG title → move &nbsp;|&nbsp; DRAG pin → wire &nbsp;|&nbsp; DRAG bg / MIDDLE-DRAG → pan &nbsp;|&nbsp; SCROLL → zoom &nbsp;|&nbsp; DEL → remove selected</div>
+    <div id="toast"></div>
+  </div>
+
+  <div id="resizer"></div>
+  <div id="code-panel">
+    <div id="code-head"><span class="st">Generated DogLua</span></div>
+    <div id="code-out"></div>
+  </div>
+</div>
+
+<dialog id="dlg-save">
+  <div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;opacity:.7">Save Patch</div>
+  <input id="dlg-save-name" type="text" placeholder="patch name">
+  <div class="row"><button class="btn" id="dlg-save-cancel">CANCEL</button><button class="btn acc" id="dlg-save-ok">SAVE</button></div>
+</dialog>
+
+<dialog id="dlg-load">
+  <div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;opacity:.7">Load Patch</div>
+  <div id="saved-list"></div>
+  <div class="row"><button class="btn" id="dlg-load-cancel">CLOSE</button></div>
+</dialog>
+
+<script>
+'use strict';
+/* ════════════════════════════════════════════════════════════════════
+   PIN / CATEGORY COLORS
+   ════════════════════════════════════════════════════════════════════ */
+const PINCOLOR = {exec:'var(--exec)', num:'var(--num)', bool:'var(--bool)', str:'var(--str)'};
+const CATCOLOR = {FLOW:'var(--flow)', LOGIC:'var(--logic)', MATH:'var(--math)', PIXELS:'var(--pix)', ANIM:'var(--anim)', IO:'var(--io)'};
+
+/* ════════════════════════════════════════════════════════════════════
+   NODE DEFINITIONS
+   Each pin tuple: [id, label, type, default?]
+   kind: 'exec' (participates in the control-flow chain, may emit code)
+         'pure' (data-only, no exec pins, expression is inlined/recursed)
+   nextPin: for 'exec' nodes, which output exec pin the main walk continues
+            from after this node's gen() runs. null = branch-terminal
+            (e.g. IF — its branches are walked explicitly inside gen()).
+   ════════════════════════════════════════════════════════════════════ */
+const NODE_DEFS = {
+
+  // ── FLOW ──────────────────────────────────────────────────────────
+  start:{cat:'FLOW',label:'START',kind:'exec',nextPin:null,
+    inputs:[],outputs:[['out','','exec']],params:[],
+    gen(){/* entry point — nothing to emit */}},
+
+  if:{cat:'FLOW',label:'IF',kind:'exec',nextPin:null,
+    inputs:[['cond','cond','bool']],
+    outputs:[['then','THEN','exec'],['else','ELSE','exec']],
+    params:[],
+    gen(node,ctx,walk){
+      ctx.emit(`if ${ctx.resolve(node,'cond')} then`);
+      ctx.indent++; walk(node.id,'then'); ctx.indent--;
+      if(ctx.hasLink(node.id,'else')){
+        ctx.emit('else');
+        ctx.indent++; walk(node.id,'else'); ctx.indent--;
+      }
+      ctx.emit('end');
+    }},
+
+  forRange:{cat:'FLOW',label:'FOR RANGE',kind:'exec',nextPin:'done',
+    inputs:[['from','from','num',0],['to','to','num',10],['step','step','num',1]],
+    outputs:[['body','BODY','exec'],['done','DONE','exec'],['i','i','num']],
+    params:[],
+    gen(node,ctx,walk){
+      const v=ctx.varFor(node.id,'i');
+      const from=ctx.resolve(node,'from'), to=ctx.resolve(node,'to');
+      let hdr;
+      if(ctx.hasLink(node.id,'step') || Number(node.inputs.step.value)!==1)
+        hdr=`for ${v} = ${from}, ${to}, ${ctx.resolve(node,'step')} do`;
+      else hdr=`for ${v} = ${from}, ${to} do`;
+      ctx.emit(hdr); ctx.indent++; walk(node.id,'body'); ctx.indent--; ctx.emit('end');
+    }},
+
+  forPixels:{cat:'FLOW',label:'FOR PIXELS',kind:'exec',nextPin:'done',
+    inputs:[],
+    outputs:[['body','BODY','exec'],['done','DONE','exec'],['x','x','num'],['y','y','num']],
+    params:[['bounds','Use Selection','checkbox',false]],
+    gen(node,ctx,walk){
+      const xv=ctx.varFor(node.id,'x'), yv=ctx.varFor(node.id,'y');
+      const b=!!node.params.bounds;
+      const y0=b?'bound_y0':'0', y1=b?'bound_y1':'height - 1';
+      const x0=b?'bound_x0':'0', x1=b?'bound_x1':'width - 1';
+      ctx.emit(`for ${yv} = ${y0}, ${y1} do`); ctx.indent++;
+      ctx.emit(`for ${xv} = ${x0}, ${x1} do`); ctx.indent++;
+      walk(node.id,'body');
+      ctx.indent--; ctx.emit('end');
+      ctx.indent--; ctx.emit('end');
+    }},
+
+  forFrames:{cat:'FLOW',label:'FOR FRAMES',kind:'exec',nextPin:'done',
+    inputs:[],
+    outputs:[['body','BODY','exec'],['done','DONE','exec'],['frame','frame','num']],
+    params:[],
+    gen(node,ctx,walk){
+      const tv=ctx.freshVar('total'), fv=ctx.varFor(node.id,'frame');
+      ctx.emit(`local ${tv} = Dog_GetTotalFrames()`);
+      ctx.emit(`for ${fv} = 0, ${tv} - 1 do`); ctx.indent++;
+      ctx.emit(`Dog_GotoFrame(${fv})`);
+      ctx.emit(`Dog_GetBuffer()`);
+      walk(node.id,'body');
+      ctx.indent--; ctx.emit('end');
+    }},
+
+  comment:{cat:'FLOW',label:'COMMENT',kind:'exec',nextPin:'out',
+    inputs:[],outputs:[['out','','exec']],
+    params:[['text','Text','text','note']],
+    gen(node,ctx){ String(node.params.text||'').split('\n').forEach(l=>ctx.emit(`-- ${l}`)); }},
+
+  // ── LOGIC ─────────────────────────────────────────────────────────
+  not:{cat:'LOGIC',label:'NOT',kind:'pure',
+    inputs:[['a','a','bool',true]],outputs:[['out','','bool']],params:[],
+    resolve(node,ctx){ return `not (${ctx.resolve(node,'a')})`; }},
+
+  and:{cat:'LOGIC',label:'AND',kind:'pure',
+    inputs:[['a','a','bool',true],['b','b','bool',true]],outputs:[['out','','bool']],params:[],
+    resolve(node,ctx){ return `(${ctx.resolve(node,'a')}) and (${ctx.resolve(node,'b')})`; }},
+
+  or:{cat:'LOGIC',label:'OR',kind:'pure',
+    inputs:[['a','a','bool',false],['b','b','bool',false]],outputs:[['out','','bool']],params:[],
+    resolve(node,ctx){ return `(${ctx.resolve(node,'a')}) or (${ctx.resolve(node,'b')})`; }},
+
+  xor:{cat:'LOGIC',label:'XOR',kind:'pure',
+    inputs:[['a','a','bool',false],['b','b','bool',false]],outputs:[['out','','bool']],params:[],
+    resolve(node,ctx){
+      const a=ctx.resolve(node,'a'), b=ctx.resolve(node,'b');
+      return `((${a}) and not (${b})) or (not (${a}) and (${b}))`;
+    }},
+
+  compare:{cat:'LOGIC',label:'COMPARE',kind:'pure',
+    inputs:[['a','a','num',0],['b','b','num',0]],outputs:[['out','','bool']],
+    params:[['op','Op','select',{options:['==','~=','<','>','<=','>='],default:'=='}]],
+    resolve(node,ctx){ return `(${ctx.resolve(node,'a')}) ${node.params.op} (${ctx.resolve(node,'b')})`; }},
+
+  // ── MATH ──────────────────────────────────────────────────────────
+  number:{cat:'MATH',label:'NUMBER',kind:'pure',
+    inputs:[],outputs:[['out','','num']],
+    params:[['value','Value','number',0]],
+    resolve(node,ctx){ return ctx.fmtNum(node.params.value); }},
+
+  mathop:{cat:'MATH',label:'MATH a▢b',kind:'pure',
+    inputs:[['a','a','num',0],['b','b','num',0]],outputs:[['out','','num']],
+    params:[['op','Op','select',{options:['+','-','*','/','%','^'],default:'+'}]],
+    resolve(node,ctx){ return `(${ctx.resolve(node,'a')}) ${node.params.op} (${ctx.resolve(node,'b')})`; }},
+
+  mathfn1:{cat:'MATH',label:'FN(a)',kind:'pure',
+    inputs:[['a','a','num',0]],outputs:[['out','','num']],
+    params:[['fn','Fn','select',{options:['sin','cos','tan','sqrt','abs','floor','ceil','exp','log'],default:'sin'}]],
+    resolve(node,ctx){ return `math.${node.params.fn}(${ctx.resolve(node,'a')})`; }},
+
+  mathfn2:{cat:'MATH',label:'FN(a,b)',kind:'pure',
+    inputs:[['a','a','num',0],['b','b','num',0]],outputs:[['out','','num']],
+    params:[['fn','Fn','select',{options:['min','max','atan2','pow'],default:'min'}]],
+    resolve(node,ctx){
+      const a=ctx.resolve(node,'a'), b=ctx.resolve(node,'b');
+      if(node.params.fn==='pow') return `(${a}) ^ (${b})`;
+      if(node.params.fn==='atan2') return `math.atan2(${a}, ${b})`;
+      return `math.${node.params.fn}(${a}, ${b})`;
+    }},
+
+  varget:{cat:'MATH',label:'GET VAR',kind:'pure',
+    inputs:[],outputs:[['out','','num']],
+    params:[['name','Name','text','myVar']],
+    resolve(node,ctx){ return ctx.ident(node.params.name); }},
+
+  varset:{cat:'MATH',label:'SET VAR',kind:'exec',nextPin:'out',
+    inputs:[['value','value','num',0]],outputs:[['out','','exec']],
+    params:[['name','Name','text','myVar']],
+    gen(node,ctx){ ctx.emit(`${ctx.ident(node.params.name)} = ${ctx.resolve(node,'value')}`); }},
+
+  strConst:{cat:'MATH',label:'STRING',kind:'pure',
+    inputs:[],outputs:[['out','','str']],
+    params:[['text','Text','text','hello']],
+    resolve(node,ctx){ return ctx.fmtStr(node.params.text); }},
+
+  concat:{cat:'MATH',label:'CONCAT a..b',kind:'pure',
+    inputs:[['a','a','str',''],['b','b','str','']],outputs:[['out','','str']],params:[],
+    resolve(node,ctx){ return `(${ctx.resolve(node,'a')}) .. (${ctx.resolve(node,'b')})`; }},
+
+  numToStr:{cat:'MATH',label:'NUM \u2192 STR',kind:'pure',
+    inputs:[['a','a','num',0]],outputs:[['out','','str']],params:[],
+    resolve(node,ctx){ return `tostring(${ctx.resolve(node,'a')})`; }},
+
+  // ── PIXELS ────────────────────────────────────────────────────────
+  getrgb:{cat:'PIXELS',label:'GET RGB',kind:'exec',nextPin:'out',
+    inputs:[['x','x','num',0],['y','y','num',0]],
+    outputs:[['out','','exec'],['r','r','num'],['g','g','num'],['b','b','num']],params:[],
+    gen(node,ctx){
+      const r=ctx.varFor(node.id,'r'), g=ctx.varFor(node.id,'g'), b=ctx.varFor(node.id,'b');
+      ctx.emit(`local ${r}, ${g}, ${b} = get_rgb(${ctx.resolve(node,'x')}, ${ctx.resolve(node,'y')})`);
+    }},
+
+  setrgb:{cat:'PIXELS',label:'SET RGB',kind:'exec',nextPin:'out',
+    inputs:[['x','x','num',0],['y','y','num',0],['r','r','num',0],['g','g','num',0],['b','b','num',0]],
+    outputs:[['out','','exec']],params:[],
+    gen(node,ctx){
+      ctx.emit(`set_rgb(${ctx.resolve(node,'x')}, ${ctx.resolve(node,'y')}, ${ctx.resolve(node,'r')}, ${ctx.resolve(node,'g')}, ${ctx.resolve(node,'b')})`);
+    }},
+
+  gethsv:{cat:'PIXELS',label:'GET HSV',kind:'exec',nextPin:'out',
+    inputs:[['x','x','num',0],['y','y','num',0]],
+    outputs:[['out','','exec'],['h','h','num'],['s','s','num'],['v','v','num']],params:[],
+    gen(node,ctx){
+      const h=ctx.varFor(node.id,'h'), s=ctx.varFor(node.id,'s'), v=ctx.varFor(node.id,'v');
+      ctx.emit(`local ${h}, ${s}, ${v} = get_hsv(${ctx.resolve(node,'x')}, ${ctx.resolve(node,'y')})`);
+    }},
+
+  sethsv:{cat:'PIXELS',label:'SET HSV',kind:'exec',nextPin:'out',
+    inputs:[['x','x','num',0],['y','y','num',0],['h','h','num',0],['s','s','num',0],['v','v','num',0]],
+    outputs:[['out','','exec']],params:[],
+    gen(node,ctx){
+      ctx.emit(`set_hsv(${ctx.resolve(node,'x')}, ${ctx.resolve(node,'y')}, ${ctx.resolve(node,'h')}, ${ctx.resolve(node,'s')}, ${ctx.resolve(node,'v')})`);
+    }},
+
+  getvalue:{cat:'PIXELS',label:'GET VALUE',kind:'exec',nextPin:'out',
+    inputs:[['x','x','num',0],['y','y','num',0]],
+    outputs:[['out','','exec'],['v','v','num']],params:[],
+    gen(node,ctx){
+      const v=ctx.varFor(node.id,'v');
+      ctx.emit(`local ${v} = get_value(${ctx.resolve(node,'x')}, ${ctx.resolve(node,'y')})`);
+    }},
+
+  setvalue:{cat:'PIXELS',label:'SET VALUE',kind:'exec',nextPin:'out',
+    inputs:[['x','x','num',0],['y','y','num',0],['v','v','num',0]],
+    outputs:[['out','','exec']],params:[],
+    gen(node,ctx){
+      ctx.emit(`set_value(${ctx.resolve(node,'x')}, ${ctx.resolve(node,'y')}, ${ctx.resolve(node,'v')})`);
+    }},
+
+  canvasGlobal:{cat:'PIXELS',label:'CANVAS',kind:'pure',
+    inputs:[],outputs:[['out','','num']],
+    params:[['which','Which','select',{options:['width','height','bound_x0','bound_x1','bound_y0','bound_y1'],default:'width'}]],
+    resolve(node){ return node.params.which; }},
+
+  // ── ANIM ──────────────────────────────────────────────────────────
+  totalFrames:{cat:'ANIM',label:'TOTAL FRAMES',kind:'pure',
+    inputs:[],outputs:[['out','','num']],params:[],
+    resolve(){ return 'Dog_GetTotalFrames()'; }},
+
+  currentFrame:{cat:'ANIM',label:'CURRENT FRAME',kind:'pure',
+    inputs:[],outputs:[['out','','num']],params:[],
+    resolve(){ return 'Dog_GetCurrentFrame()'; }},
+
+  gotoFrame:{cat:'ANIM',label:'GOTO FRAME',kind:'exec',nextPin:'out',
+    inputs:[['n','n','num',0]],outputs:[['out','','exec']],params:[],
+    gen(node,ctx){ ctx.emit(`Dog_GotoFrame(${ctx.resolve(node,'n')})`); ctx.emit('Dog_GetBuffer()'); }},
+
+  refresh:{cat:'ANIM',label:'REFRESH',kind:'exec',nextPin:'out',
+    inputs:[],outputs:[['out','','exec']],params:[],
+    gen(node,ctx){ ctx.emit('Dog_Refresh()'); }},
+
+  saveUndo:{cat:'ANIM',label:'SAVE UNDO',kind:'exec',nextPin:'out',
+    inputs:[],outputs:[['out','','exec']],params:[],
+    gen(node,ctx){ if(ctx.lastLine()!=='Dog_Refresh()') ctx.emit('Dog_Refresh()'); ctx.emit('Dog_SaveUndo()'); }},
+
+  restoreUndo:{cat:'ANIM',label:'RESTORE UNDO',kind:'exec',nextPin:'out',
+    inputs:[],outputs:[['out','','exec']],params:[],
+    gen(node,ctx){ ctx.emit('Dog_RestoreUndo()'); ctx.emit('Dog_GetBuffer()'); }},
+
+  progress:{cat:'ANIM',label:'PROGRESS',kind:'exec',nextPin:'out',
+    inputs:[['t','t','num',0]],outputs:[['out','','exec']],params:[],
+    gen(node,ctx){ ctx.emit(`progress(${ctx.resolve(node,'t')})`); }},
+
+  flush:{cat:'ANIM',label:'FLUSH',kind:'exec',nextPin:'out',
+    inputs:[],outputs:[['out','','exec']],params:[],
+    gen(node,ctx){ ctx.emit('flush()'); }},
+
+  // ── IO ────────────────────────────────────────────────────────────
+  messageBox:{cat:'IO',label:'MESSAGE BOX',kind:'exec',nextPin:'out',
+    inputs:[['l1','line 1','str','Hello'],['l2','line 2','str',''],['l3','line 3','str','']],
+    outputs:[['out','','exec']],params:[],
+    gen(node,ctx){
+      const parts=['l1','l2','l3']
+        .filter(k=>ctx.hasLink(node.id,k) || String(node.inputs[k].value).length>0)
+        .map(k=>ctx.resolve(node,k));
+      ctx.emit(`Dog_MessageBox(${parts.length?parts.join(', '):'""'})`);
+    }},
+
+  valueBox:{cat:'IO',label:'VALUE BOX',kind:'exec',nextPin:'out',
+    inputs:[['title','title','str','Input'],['prompt','prompt','str','Enter value'],
+      ['min','min','num',0],['max','max','num',100],['def','default','num',50]],
+    outputs:[['out','','exec'],['value','value','num']],params:[],
+    gen(node,ctx){
+      const v=ctx.varFor(node.id,'value');
+      ctx.emit(`local ${v} = Dog_ValueBox(${ctx.resolve(node,'title')}, ${ctx.resolve(node,'prompt')}, ${ctx.resolve(node,'min')}, ${ctx.resolve(node,'max')}, ${ctx.resolve(node,'def')})`);
+      ctx.emit(`if ${v} == -1 then return end`);
+    }},
+
+  shellExe:{cat:'IO',label:'SHELL EXE',kind:'exec',nextPin:'out',
+    inputs:[['cmd','cmd','str','']],outputs:[['out','','exec']],params:[],
+    gen(node,ctx){ ctx.emit(`Dog_ShellExe(${ctx.resolve(node,'cmd')})`); ctx.emit('Dog_GetBuffer()'); }},
+
+};
+
+// Every exec-kind node (except START, which is the entry point) receives an
+// implicit exec input pin so it can be wired into a flow chain.
+Object.entries(NODE_DEFS).forEach(([type,def])=>{
+  if(def.kind==='exec' && type!=='start'){
+    def.inputs = [['in','','exec'], ...def.inputs];
+  }
+});
+
+const CAT_ORDER = ['FLOW','LOGIC','MATH','PIXELS','ANIM','IO'];
+
+/* ════════════════════════════════════════════════════════════════════
+   GRAPH STATE
+   ════════════════════════════════════════════════════════════════════ */
+let nodes = [];       // {id,type,x,y,inputs:{pinId:{value}}, params:{paramId:value}}
+let links = [];       // {id,fromNode,fromPin,toNode,toPin,kind:'exec'|'data'}
+let selNode = null;
+let idCounter = 1;
+function nextId(){ return 'n'+(idCounter++); }
+function nodesById(id){ return nodes.find(n=>n.id===id); }
+
+function makeNode(type, x, y){
+  const def = NODE_DEFS[type];
+  const node = {id:nextId(), type, x, y, inputs:{}, params:{}};
+  def.inputs.forEach(([id,label,ptype,dflt])=>{ node.inputs[id] = {value: dflt===undefined? (ptype==='str'?'':(ptype==='bool'?false:0)) : dflt}; });
+  (def.params||[]).forEach(([id,label,kind,spec])=>{
+    if(kind==='select') node.params[id] = spec.default;
+    else node.params[id] = spec;
+  });
+  return node;
+}
+
+function addNode(type, x, y){
+  const node = makeNode(type, x, y);
+  nodes.push(node);
+  renderNode(node);
+  selectNode(node.id);
+  scheduleSave();
+  generateCode();
+  return node;
+}
+
+function deleteNode(id){
+  links = links.filter(l=>l.fromNode!==id && l.toNode!==id);
+  nodes = nodes.filter(n=>n.id!==id);
+  const el = document.getElementById('node-'+id);
+  if(el) el.remove();
+  if(selNode===id) selNode=null;
+  redrawWires();
+  scheduleSave();
+  generateCode();
+}
+
+function addLink(fromNode,fromPin,toNode,toPin,kind){
+  // an input pin (exec or data) accepts only ONE incoming link
+  links = links.filter(l=>!(l.toNode===toNode && l.toPin===toPin));
+  // an exec output pin can only lead to ONE place
+  if(kind==='exec') links = links.filter(l=>!(l.fromNode===fromNode && l.fromPin===fromPin && l.kind==='exec'));
+  links.push({id:nextId(), fromNode, fromPin, toNode, toPin, kind});
+  redrawWires();
+  scheduleSave();
+  generateCode();
+}
+
+function getPinDef(type, pinId, dir){
+  const def = NODE_DEFS[type];
+  const list = dir==='in' ? def.inputs : def.outputs;
+  return list.find(p=>p[0]===pinId);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   RENDERING — nodes
+   ════════════════════════════════════════════════════════════════════ */
+const nodesLayer = document.getElementById('nodes-layer');
+
+function isConnected(nodeId,pinId,dir){
+  return links.some(l => dir==='in' ? (l.toNode===nodeId&&l.toPin===pinId) : (l.fromNode===nodeId&&l.fromPin===pinId));
+}
+
+function renderNode(node){
+  const def = NODE_DEFS[node.type];
+  const catColor = CATCOLOR[def.cat];
+  let el = document.getElementById('node-'+node.id);
+  if(!el){ el = document.createElement('div'); el.className='node'; el.id='node-'+node.id; nodesLayer.appendChild(el); }
+  el.style.left = node.x+'px'; el.style.top = node.y+'px';
+  el.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className='node-head'; head.style.borderLeftColor = catColor;
+  head.innerHTML = `<span>${def.label}</span>`;
+  const del = document.createElement('button');
+  del.className='node-del'; del.textContent='\u00d7'; del.title='Delete node';
+  del.onclick = (e)=>{ e.stopPropagation(); deleteNode(node.id); };
+  head.appendChild(del);
+  head.addEventListener('mousedown', e=>startNodeDrag(e,node));
+  el.appendChild(head);
+
+  const body = document.createElement('div'); body.className='node-body';
+  const pinsRow = document.createElement('div'); pinsRow.className='pins-row';
+  const colIn = document.createElement('div'); colIn.className='pins-col in';
+  const colOut = document.createElement('div'); colOut.className='pins-col out';
+
+  def.inputs.forEach(([pid,label,ptype])=>{
+    const row = document.createElement('div'); row.className='pin-row';
+    const dot = document.createElement('div');
+    dot.className='pin-dot'+(ptype==='exec'?' exec':'')+(isConnected(node.id,pid,'in')?' connected':'');
+    dot.style.color = PINCOLOR[ptype];
+    dot.dataset.node=node.id; dot.dataset.pin=pid; dot.dataset.dir='in'; dot.dataset.type=ptype;
+    dot.title = label||pid;
+    dot.addEventListener('mousedown', e=>startWireDrag(e,node.id,pid,'in',ptype));
+    row.appendChild(dot);
+    const lbl = document.createElement('span'); lbl.className='pin-lbl'; lbl.textContent = label||pid;
+    row.appendChild(lbl);
+    if(ptype!=='exec' && !isConnected(node.id,pid,'in')){
+      const inp = document.createElement('input'); inp.className='pin-def';
+      if(ptype==='num'){ inp.type='number'; inp.step='any'; inp.value = node.inputs[pid].value; }
+      else if(ptype==='bool'){ inp.type='text'; inp.value = node.inputs[pid].value?'true':'false'; }
+      else { inp.type='text'; inp.value = node.inputs[pid].value; }
+      inp.addEventListener('mousedown', e=>e.stopPropagation());
+      inp.addEventListener('change', ()=>{
+        let v = inp.value;
+        if(ptype==='num'){ v = Number(v); if(!Number.isFinite(v)) v=0; }
+        else if(ptype==='bool'){ v = /^(true|1|yes)$/i.test(v.trim()); }
+        node.inputs[pid].value = v;
+        scheduleSave(); generateCode();
+      });
+      row.appendChild(inp);
+    }
+    colIn.appendChild(row);
+  });
+
+  def.outputs.forEach(([pid,label,ptype])=>{
+    const row = document.createElement('div'); row.className='pin-row';
+    const dot = document.createElement('div');
+    dot.className='pin-dot'+(ptype==='exec'?' exec':'')+(isConnected(node.id,pid,'out')?' connected':'');
+    dot.style.color = PINCOLOR[ptype];
+    dot.dataset.node=node.id; dot.dataset.pin=pid; dot.dataset.dir='out'; dot.dataset.type=ptype;
+    dot.title = label||pid;
+    dot.addEventListener('mousedown', e=>startWireDrag(e,node.id,pid,'out',ptype));
+    const lbl = document.createElement('span'); lbl.className='pin-lbl'; lbl.textContent = label||pid;
+    row.appendChild(lbl); row.appendChild(dot);
+    colOut.appendChild(row);
+  });
+
+  pinsRow.appendChild(colIn); pinsRow.appendChild(colOut);
+  body.appendChild(pinsRow);
+
+  if(def.params && def.params.length){
+    const params = document.createElement('div'); params.className='params';
+    def.params.forEach(([pid,label,kind,spec])=>{
+      const row = document.createElement('div'); row.className='param-row'+(kind==='checkbox'?' chk':'');
+      if(kind==='checkbox'){
+        const cb = document.createElement('input'); cb.type='checkbox'; cb.checked=!!node.params[pid];
+        cb.addEventListener('change', ()=>{ node.params[pid]=cb.checked; scheduleSave(); generateCode(); });
+        const l = document.createElement('label'); l.textContent=label; l.style.textTransform='none';
+        row.appendChild(cb); row.appendChild(l);
+      } else {
+        const l = document.createElement('label'); l.textContent=label; row.appendChild(l);
+        let ctrl;
+        if(kind==='select'){
+          ctrl = document.createElement('select');
+          spec.options.forEach(o=>{ const op=document.createElement('option'); op.value=o; op.textContent=o; ctrl.appendChild(op); });
+          ctrl.value = node.params[pid];
+          ctrl.addEventListener('change', ()=>{ node.params[pid]=ctrl.value; scheduleSave(); generateCode(); });
+        } else if(kind==='number'){
+          ctrl = document.createElement('input'); ctrl.type='number'; ctrl.step='any'; ctrl.value=node.params[pid];
+          ctrl.addEventListener('change', ()=>{ node.params[pid]=Number(ctrl.value)||0; scheduleSave(); generateCode(); });
+        } else {
+          ctrl = document.createElement('input'); ctrl.type='text'; ctrl.value=node.params[pid];
+          ctrl.addEventListener('change', ()=>{ node.params[pid]=ctrl.value; scheduleSave(); generateCode(); });
+        }
+        ctrl.addEventListener('mousedown', e=>e.stopPropagation());
+        row.appendChild(ctrl);
+      }
+      params.appendChild(row);
+    });
+    body.appendChild(params);
+  }
+
+  el.appendChild(body);
+  el.addEventListener('mousedown', ()=>selectNode(node.id));
+  if(selNode===node.id) el.classList.add('sel');
+}
+
+function renderAllNodes(){ nodesLayer.innerHTML=''; nodes.forEach(renderNode); }
+
+function selectNode(id){
+  selNode = id;
+  document.querySelectorAll('.node').forEach(el=>el.classList.toggle('sel', el.id==='node-'+id));
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   VIEWPORT — pan & zoom
+   ════════════════════════════════════════════════════════════════════ */
+const canvasWrap = document.getElementById('canvas-wrap');
+const world = document.getElementById('world');
+let panX=300, panY=200, zoom=1;
+function applyView(){
+  world.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  document.getElementById('zoom-lbl').textContent = Math.round(zoom*100)+'%';
+}
+function screenToWorld(sx,sy){ return [(sx-panX)/zoom, (sy-panY)/zoom]; }
+
+let bgPanning=false, panStartX=0, panStartY=0, panOrigX=0, panOrigY=0;
+canvasWrap.addEventListener('mousedown', e=>{
+  if(e.target!==canvasWrap && e.target.id!=='world' && e.target.id!=='bgdots' && e.target.id!=='nodes-layer') {
+    if(e.button!==1) return;
+  }
+  if(e.button===1 || e.target.id==='bgdots' || e.target===canvasWrap){
+    bgPanning=true; panStartX=e.clientX; panStartY=e.clientY; panOrigX=panX; panOrigY=panY;
+    canvasWrap.classList.add('panning');
+    selectNode(null);
+    e.preventDefault();
+  }
+});
+window.addEventListener('mousemove', e=>{
+  if(bgPanning){
+    panX = panOrigX + (e.clientX-panStartX);
+    panY = panOrigY + (e.clientY-panStartY);
+    applyView(); redrawWires();
+  }
+});
+window.addEventListener('mouseup', ()=>{ bgPanning=false; canvasWrap.classList.remove('panning'); });
+
+canvasWrap.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const rect = canvasWrap.getBoundingClientRect();
+  const sx=e.clientX-rect.left, sy=e.clientY-rect.top;
+  const [wx,wy] = screenToWorld(sx,sy);
+  const zf = e.deltaY<0 ? 1.1 : 0.9;
+  zoom = Math.max(0.25, Math.min(2.5, zoom*zf));
+  panX = sx - wx*zoom; panY = sy - wy*zoom;
+  applyView(); redrawWires();
+},{passive:false});
+
+/* ════════════════════════════════════════════════════════════════════
+   NODE DRAGGING
+   ════════════════════════════════════════════════════════════════════ */
+let dragNode=null, dragStartSX=0, dragStartSY=0, dragOrigX=0, dragOrigY=0;
+function startNodeDrag(e,node){
+  if(e.button!==0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  selectNode(node.id);
+  dragNode=node; dragStartSX=e.clientX; dragStartSY=e.clientY; dragOrigX=node.x; dragOrigY=node.y;
+  window.addEventListener('mousemove', onNodeDrag);
+  window.addEventListener('mouseup', endNodeDrag);
+}
+function onNodeDrag(e){
+  if(!dragNode) return;
+  dragNode.x = dragOrigX + (e.clientX-dragStartSX)/zoom;
+  dragNode.y = dragOrigY + (e.clientY-dragStartSY)/zoom;
+  const el = document.getElementById('node-'+dragNode.id);
+  el.style.left = dragNode.x+'px'; el.style.top = dragNode.y+'px';
+  redrawWires();
+}
+function endNodeDrag(){
+  window.removeEventListener('mousemove', onNodeDrag);
+  window.removeEventListener('mouseup', endNodeDrag);
+  if(dragNode){ scheduleSave(); }
+  dragNode=null;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   WIRE DRAGGING
+   ════════════════════════════════════════════════════════════════════ */
+const wiresG = document.getElementById('wires-g');
+let pendingWire = null; // {fixedNode,fixedPin,fixedDir,type, tempPath}
+
+function startWireDrag(e,nodeId,pinId,dir,type){
+  e.stopPropagation(); e.preventDefault();
+  let fixedNode=nodeId, fixedPin=pinId, fixedDir=dir;
+  if(dir==='in'){
+    const existing = links.find(l=>l.toNode===nodeId && l.toPin===pinId);
+    if(existing){
+      links = links.filter(l=>l!==existing);
+      fixedNode=existing.fromNode; fixedPin=existing.fromPin; fixedDir='out';
+      redrawWires(); scheduleSave(); generateCode();
+    }
+  }
+  pendingWire = {fixedNode,fixedPin,fixedDir,type};
+  const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+  path.setAttribute('class','temp-wire');
+  path.setAttribute('fill','none');
+  path.setAttribute('stroke', type==='exec'?'#eef1fb':PINCOLOR_RAW[type]);
+  path.setAttribute('stroke-width', type==='exec'?'2.5':'2');
+  path.setAttribute('stroke-dasharray','5,4');
+  wiresG.appendChild(path);
+  pendingWire.path = path;
+  window.addEventListener('mousemove', onWireDrag);
+  window.addEventListener('mouseup', endWireDrag);
+}
+
+function pinScreenPos(nodeId,pinId,dir){
+  const sel = `#node-${nodeId} .pin-dot[data-pin="${pinId}"][data-dir="${dir}"]`;
+  const dot = document.querySelector(sel);
+  if(!dot) return null;
+  const r = dot.getBoundingClientRect();
+  const wrapR = canvasWrap.getBoundingClientRect();
+  const sx = r.left + r.width/2 - wrapR.left;
+  const sy = r.top + r.height/2 - wrapR.top;
+  return screenToWorld(sx,sy);
+}
+
+function bezierPath(x1,y1,x2,y2){
+  const dx = Math.max(40, Math.abs(x2-x1)*0.5);
+  return `M ${x1},${y1} C ${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}`;
+}
+
+function onWireDrag(e){
+  if(!pendingWire) return;
+  const rect = canvasWrap.getBoundingClientRect();
+  const [mx,my] = screenToWorld(e.clientX-rect.left, e.clientY-rect.top);
+  const [fx,fy] = pinScreenPos(pendingWire.fixedNode, pendingWire.fixedPin, pendingWire.fixedDir);
+  const d = pendingWire.fixedDir==='out' ? bezierPath(fx,fy,mx,my) : bezierPath(mx,my,fx,fy);
+  pendingWire.path.setAttribute('d', d);
+}
+
+function endWireDrag(e){
+  window.removeEventListener('mousemove', onWireDrag);
+  window.removeEventListener('mouseup', endWireDrag);
+  if(!pendingWire) return;
+  pendingWire.path.remove();
+  const target = document.elementFromPoint(e.clientX, e.clientY);
+  if(target && target.classList && target.classList.contains('pin-dot')){
+    const tNode = target.dataset.node, tPin = target.dataset.pin, tDir = target.dataset.dir, tType = target.dataset.type;
+    const f = pendingWire;
+    if(tDir !== f.fixedDir && tType === f.type && tNode !== f.fixedNode){
+      const outEnd = f.fixedDir==='out' ? {node:f.fixedNode,pin:f.fixedPin} : {node:tNode,pin:tPin};
+      const inEnd  = f.fixedDir==='out' ? {node:tNode,pin:tPin} : {node:f.fixedNode,pin:f.fixedPin};
+      addLink(outEnd.node, outEnd.pin, inEnd.node, inEnd.pin, tType==='exec'?'exec':'data');
+      renderNode(nodesById(outEnd.node)); renderNode(nodesById(inEnd.node));
+      if(selNode) document.getElementById('node-'+selNode)?.classList.add('sel');
+    }
+  }
+  pendingWire = null;
+}
+
+const PINCOLOR_RAW = {exec:'#eef1fb', num:'#00e5ff', bool:'#ff2e88', str:'#ffcc33'};
+
+function redrawWires(){
+  wiresG.innerHTML='';
+  links.forEach(l=>{
+    const p1 = pinScreenPos(l.fromNode,l.fromPin,'out');
+    const p2 = pinScreenPos(l.toNode,l.toPin,'in');
+    if(!p1||!p2) return;
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d', bezierPath(p1[0],p1[1],p2[0],p2[1]));
+    path.setAttribute('fill','none');
+    path.setAttribute('stroke', l.kind==='exec'?'#eef1fb':PINCOLOR_RAW[getLinkType(l)]);
+    path.setAttribute('stroke-width', l.kind==='exec'?'2.5':'1.6');
+    path.setAttribute('opacity', l.kind==='exec'?'0.95':'0.75');
+    path.style.cursor='pointer'; path.style.pointerEvents='stroke';
+    path.addEventListener('mousedown', ev=>{
+      if(ev.button!==0) return;
+      ev.stopPropagation();
+      links = links.filter(x=>x.id!==l.id);
+      const a=nodesById(l.fromNode), b=nodesById(l.toNode);
+      redrawWires(); scheduleSave(); generateCode();
+      if(a) renderNode(a); if(b) renderNode(b);
+      redrawWires();
+    });
+    wiresG.appendChild(path);
+  });
+}
+function getLinkType(l){
+  const n = nodesById(l.toNode);
+  const pd = getPinDef(n.type, l.toPin, 'in');
+  return pd ? pd[2] : 'num';
+}
+
+document.addEventListener('keydown', e=>{
+  if((e.key==='Delete'||e.key==='Backspace') && selNode && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){
+    deleteNode(selNode);
+  }
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   PALETTE
+   ════════════════════════════════════════════════════════════════════ */
+const palette = document.getElementById('palette');
+CAT_ORDER.forEach(cat=>{
+  const h = document.createElement('div'); h.className='pal-cat'; h.style.color=CATCOLOR[cat];
+  h.textContent = cat; palette.appendChild(h);
+  Object.entries(NODE_DEFS).filter(([,d])=>d.cat===cat).forEach(([type,def])=>{
+    const item = document.createElement('div'); item.className='pal-item';
+    item.style.borderLeftColor = CATCOLOR[cat];
+    item.textContent = def.label;
+    item.addEventListener('click', ()=>{
+      const rect = canvasWrap.getBoundingClientRect();
+      const [wx,wy] = screenToWorld(rect.width/2 + (Math.random()*60-30), rect.height/2 + (Math.random()*60-30));
+      addNode(type, wx, wy);
+    });
+    palette.appendChild(item);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   CODE GENERATION
+   ════════════════════════════════════════════════════════════════════ */
+function makeCtx(){
+  return {
+    lines: [], indent: 0, varCounters: {}, execVarMap: {}, errors: [],
+    emit(s){ this.lines.push('  '.repeat(this.indent)+s); },
+    lastLine(){ return this.lines.length ? this.lines[this.lines.length-1].trim() : ''; },
+    freshVar(base){ this.varCounters[base]=(this.varCounters[base]||0)+1; return `${base}${this.varCounters[base]}`; },
+    varFor(nodeId,pin){ const key=nodeId+':'+pin; if(!this.execVarMap[key]) this.execVarMap[key]=this.freshVar(pin+'_'); return this.execVarMap[key]; },
+    ident(name){ const s=String(name||'v'); return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s) ? s : '_'+s.replace(/[^A-Za-z0-9_]/g,'_'); },
+    fmtNum(v){ const n=Number(v); return Number.isFinite(n) ? String(n) : '0'; },
+    fmtStr(s){ return '"' + String(s==null?'':s).replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n') + '"'; },
+    hasLink(nodeId,pin){ return links.some(l=>l.toNode===nodeId && l.toPin===pin && l.kind==='data'); },
+    resolve(node, pinId){
+      const pd = getPinDef(node.type, pinId, 'in');
+      const ptype = pd ? pd[2] : 'num';
+      const link = links.find(l=>l.toNode===node.id && l.toPin===pinId && l.kind==='data');
+      if(link){
+        const srcNode = nodesById(link.fromNode);
+        const def = NODE_DEFS[srcNode.type];
+        if(def.kind==='pure') return def.resolve(srcNode, this);
+        const key = link.fromNode+':'+link.fromPin;
+        if(this.execVarMap[key]===undefined){
+          this.errors.push(`"${def.label}" output used before it runs in the flow — check wiring order`);
+          return ptype==='str' ? '""' : (ptype==='bool' ? 'false' : '0');
+        }
+        return this.execVarMap[key];
+      }
+      const val = node.inputs[pinId] ? node.inputs[pinId].value : undefined;
+      if(ptype==='str') return this.fmtStr(val);
+      if(ptype==='bool') return val ? 'true' : 'false';
+      return this.fmtNum(val);
+    }
+  };
+}
+
+function getExecTarget(nodeId,pin){
+  const l = links.find(x=>x.fromNode===nodeId && x.fromPin===pin && x.kind==='exec');
+  return l ? l.toNode : null;
+}
+
+function generateCode(){
+  const out = document.getElementById('code-out');
+  const startNode = nodes.find(n=>n.type==='start');
+  if(!startNode){
+    out.innerHTML = '<span class="err">-- Add a START node from the FLOW palette to begin.</span>';
+    return;
+  }
+  const ctx = makeCtx();
+  function walk(nodeId, pin){
+    let cur = getExecTarget(nodeId, pin);
+    let guard = 0;
+    while(cur && guard++ < 5000){
+      const node = nodesById(cur);
+      if(!node) break;
+      const def = NODE_DEFS[node.type];
+      def.gen(node, ctx, walk);
+      if(def.nextPin) cur = getExecTarget(node.id, def.nextPin);
+      else cur = null;
+    }
+  }
+  ctx.emit('-- Generated by DogLua Patchbay');
+  walk(startNode.id, 'out');
+  let text = ctx.lines.join('\n');
+  if(ctx.errors.length){
+    text = '-- \u26a0 ' + ctx.errors.join('\n-- \u26a0 ') + '\n\n' + text;
+  }
+  out.textContent = text;
+  return text;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   TOAST
+   ════════════════════════════════════════════════════════════════════ */
+function toast(msg){
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(()=>el.classList.remove('show'), 1600);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   PERSISTENCE (window.storage) — autosave + named patches
+   ════════════════════════════════════════════════════════════════════ */
+function serializeGraph(){
+  return JSON.stringify({nodes, links, idCounter, panX, panY, zoom});
+}
+function loadGraph(json){
+  try{
+    const data = JSON.parse(json);
+    nodes = data.nodes||[]; links = data.links||[]; idCounter = data.idCounter||1;
+    panX = data.panX!==undefined?data.panX:300; panY = data.panY!==undefined?data.panY:200; zoom = data.zoom||1;
+    applyView(); renderAllNodes(); redrawWires(); generateCode();
+    return true;
+  }catch(e){ console.error('load failed', e); return false; }
+}
+
+let saveTimer=null;
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async ()=>{
+    try{ await window.storage.set('autosave', serializeGraph(), false); }
+    catch(e){ console.error('autosave failed', e); }
+  }, 500);
+}
+async function tryAutoload(){
+  try{
+    const res = await window.storage.get('autosave', false);
+    if(res && res.value){ loadGraph(res.value); return true; }
+  }catch(e){ /* no autosave yet */ }
+  return false;
+}
+
+async function listSavedPatches(){
+  try{
+    const res = await window.storage.list('patch:', false);
+    return res && res.keys ? res.keys : [];
+  }catch(e){ return []; }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   EXAMPLE PATCH — invert every pixel, every frame
+   ════════════════════════════════════════════════════════════════════ */
+function loadExample(){
+  nodes=[]; links=[]; idCounter=1;
+  const start = makeNode('start', 40, 260); nodes.push(start);
+  const su = makeNode('saveUndo', 260, 260); nodes.push(su);
+  const ff = makeNode('forFrames', 460, 260); nodes.push(ff);
+  const fp = makeNode('forPixels', 720, 220); nodes.push(fp);
+  const grgb = makeNode('getrgb', 980, 180); nodes.push(grgb);
+  const n1 = makeNode('number', 980, 420); n1.params.value=1; nodes.push(n1);
+  const sub1 = makeNode('mathop', 1180, 150); sub1.params.op='-'; nodes.push(sub1);
+  const sub2 = makeNode('mathop', 1180, 260); sub2.params.op='-'; nodes.push(sub2);
+  const sub3 = makeNode('mathop', 1180, 370); sub3.params.op='-'; nodes.push(sub3);
+  const srgb = makeNode('setrgb', 1420, 260); nodes.push(srgb);
+  const ref = makeNode('refresh', 720, 470); nodes.push(ref);
+  const msg = makeNode('messageBox', 940, 470); msg.inputs.l1.value='Inverted all frames!'; nodes.push(msg);
+
+  sub1.inputs.a.value=1; sub2.inputs.a.value=1; sub3.inputs.a.value=1;
+
+  function execInPin(type){ const d=NODE_DEFS[type]; const p=d.inputs.find(p=>p[2]==='exec'); return p?p[0]:'__none'; }
+  function ex(a,pinA,b){ links.push({id:nextId(),fromNode:a.id,fromPin:pinA,toNode:b.id,toPin:execInPin(b.type),kind:'exec'}); }
+  function dat(a,pinA,b,pinB){ links.push({id:nextId(),fromNode:a.id,fromPin:pinA,toNode:b.id,toPin:pinB,kind:'data'}); }
+
+  ex(start,'out',su);
+  ex(su,'out',ff);
+  ex(ff,'body',fp);
+  ex(fp,'body',grgb);
+  ex(grgb,'out',srgb);
+  ex(fp,'done',ref);
+  ex(ff,'done',msg);
+
+  dat(fp,'x',grgb,'x'); dat(fp,'y',grgb,'y');
+  dat(fp,'x',srgb,'x'); dat(fp,'y',srgb,'y');
+  dat(n1,'out',sub1,'a'); dat(grgb,'r',sub1,'b');
+  dat(n1,'out',sub2,'a'); dat(grgb,'g',sub2,'b');
+  dat(n1,'out',sub3,'a'); dat(grgb,'b',sub3,'b');
+  dat(sub1,'out',srgb,'r'); dat(sub2,'out',srgb,'g'); dat(sub3,'out',srgb,'b');
+
+  panX=60; panY=80; zoom=0.62; applyView();
+  renderAllNodes(); redrawWires(); generateCode();
+  scheduleSave();
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   TOP BAR WIRING
+   ════════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-run').onclick = ()=>{ generateCode(); toast('Code regenerated'); };
+document.getElementById('btn-copy').onclick = async ()=>{
+  const text = generateCode();
+  try{ await navigator.clipboard.writeText(text); toast('Copied to clipboard'); }
+  catch(e){ toast('Copy failed — select manually'); }
+};
+document.getElementById('btn-dl').onclick = ()=>{
+  const text = generateCode();
+  const blob = new Blob([text], {type:'text/plain'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'patch.lua'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 3000);
+};
+document.getElementById('btn-example').onclick = ()=>{ loadExample(); toast('Loaded example patch'); };
+document.getElementById('btn-clear').onclick = ()=>{
+  if(!nodes.length || confirm('Clear the current patch?')){
+    nodes=[]; links=[]; idCounter=1; selNode=null;
+    renderAllNodes(); redrawWires(); generateCode(); scheduleSave();
+  }
+};
+
+const dlgSave = document.getElementById('dlg-save');
+document.getElementById('btn-save').onclick = ()=>{ document.getElementById('dlg-save-name').value=''; dlgSave.showModal(); };
+document.getElementById('dlg-save-cancel').onclick = ()=> dlgSave.close();
+document.getElementById('dlg-save-ok').onclick = async ()=>{
+  const name = document.getElementById('dlg-save-name').value.trim();
+  if(!name){ toast('Enter a name'); return; }
+  try{
+    await window.storage.set('patch:'+name, serializeGraph(), false);
+    toast('Saved "'+name+'"'); dlgSave.close();
+  }catch(e){ toast('Save failed'); }
+};
+
+const dlgLoad = document.getElementById('dlg-load');
+document.getElementById('btn-load').onclick = async ()=>{
+  const list = document.getElementById('saved-list');
+  list.innerHTML = '<div style="opacity:.5;padding:6px 0">Loading\u2026</div>';
+  dlgLoad.showModal();
+  const keys = await listSavedPatches();
+  list.innerHTML = '';
+  if(!keys.length){ list.innerHTML = '<div style="opacity:.5;padding:6px 0">No saved patches yet.</div>'; return; }
+  keys.forEach(k=>{
+    const name = k.slice('patch:'.length);
+    const row = document.createElement('div'); row.className='saved-row';
+    const span = document.createElement('span'); span.textContent = name;
+    span.onclick = async ()=>{
+      try{
+        const res = await window.storage.get(k, false);
+        if(res && res.value){ loadGraph(res.value); toast('Loaded "'+name+'"'); dlgLoad.close(); }
+      }catch(e){ toast('Load failed'); }
+    };
+    const del = document.createElement('button'); del.textContent='\u00d7'; del.title='Delete';
+    del.onclick = async (e)=>{
+      e.stopPropagation();
+      try{ await window.storage.delete(k, false); row.remove(); toast('Deleted'); }
+      catch(err){ toast('Delete failed'); }
+    };
+    row.appendChild(span); row.appendChild(del);
+    list.appendChild(row);
+  });
+};
+document.getElementById('dlg-load-cancel').onclick = ()=> dlgLoad.close();
+
+/* ── panel resizer ── */
+(function(){
+  const resizer = document.getElementById('resizer');
+  const panel = document.getElementById('code-panel');
+  let resizing=false;
+  resizer.addEventListener('mousedown', e=>{ resizing=true; e.preventDefault(); });
+  window.addEventListener('mousemove', e=>{
+    if(!resizing) return;
+    const rect = document.getElementById('main').getBoundingClientRect();
+    const w = Math.max(280, Math.min(640, rect.right - e.clientX));
+    panel.style.width = w+'px';
+    redrawWires();
+  });
+  window.addEventListener('mouseup', ()=>resizing=false);
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   BOOT
+   ════════════════════════════════════════════════════════════════════ */
+(async function boot(){
+  applyView();
+  const restored = await tryAutoload();
+  if(!restored) loadExample();
+})();
+</script>
+</body>
+</html>
